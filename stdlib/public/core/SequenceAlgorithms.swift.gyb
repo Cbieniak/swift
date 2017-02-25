@@ -357,8 +357,12 @@ ${equivalenceExplanation}
 %   end
   ) ${rethrows_}-> Bool
     where
-    OtherSequence: Sequence,
+    OtherSequence: Sequence${" {" if preds else ","}
+%   if preds:
+    ${"" if preds else ""}
+%   else:
     OtherSequence.${GElement} == ${GElement} {
+%   end
 
     var iter1 = self.makeIterator()
     var iter2 = other.makeIterator()
