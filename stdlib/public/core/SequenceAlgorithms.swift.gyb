@@ -358,9 +358,7 @@ ${equivalenceExplanation}
   ) ${rethrows_}-> Bool
     where
     OtherSequence: Sequence${" {" if preds else ","}
-%   if preds:
-    ${"" if preds else ""}
-%   else:
+%   if not preds:
     OtherSequence.${GElement} == ${GElement} {
 %   end
 
