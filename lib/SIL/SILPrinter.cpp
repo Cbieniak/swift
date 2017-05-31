@@ -238,9 +238,9 @@ static void printValueDecl(ValueDecl *Decl, raw_ostream &OS) {
   assert(Decl->hasName());
 
   if (Decl->isOperator())
-    OS << '"' << Decl->getName() << '"';
+    OS << '"' << Decl->getBaseName() << '"';
   else
-    OS << Decl->getName();
+    OS << Decl->getBaseName();
 }
 
 /// SILDeclRef uses sigil "#" and prints the fully qualified dotted path.
@@ -330,6 +330,8 @@ void SILDeclRef::print(raw_ostream &OS) const {
     OS << "!propertyinit";
     break;
   }
+
+  auto uncurryLevel = getUncurryLevel();
   if (uncurryLevel != 0)
     OS << (isDot ? '.' : '!')  << uncurryLevel;
 
@@ -953,6 +955,7 @@ public:
     // Should not apply to callees.
     case ParameterConvention::Direct_Unowned:
     case ParameterConvention::Indirect_In:
+    case ParameterConvention::Indirect_In_Constant:
     case ParameterConvention::Indirect_Inout:
     case ParameterConvention::Indirect_In_Guaranteed:
     case ParameterConvention::Indirect_InoutAliasable:
@@ -1355,6 +1358,14 @@ public:
   void visitRetainValueInst(RetainValueInst *I) { visitRefCountingInst(I); }
 
   void visitReleaseValueInst(ReleaseValueInst *I) { visitRefCountingInst(I); }
+
+  void visitRetainValueAddrInst(RetainValueAddrInst *I) {
+    visitRefCountingInst(I);
+  }
+
+  void visitReleaseValueAddrInst(ReleaseValueAddrInst *I) {
+    visitRefCountingInst(I);
+  }
 
   void visitAutoreleaseValueInst(AutoreleaseValueInst *I) {
     visitRefCountingInst(I);
@@ -2438,7 +2449,7 @@ void SILWitnessTable::print(llvm::raw_ostream &OS, bool Verbose) const {
     case MissingOptional: {
       // optional requirement 'declref': <<not present>>
       OS << "optional requirement '"
-         << witness.getMissingOptionalWitness().Witness->getName()
+         << witness.getMissingOptionalWitness().Witness->getBaseName()
          << "': <<not present>>";
       break;
     }

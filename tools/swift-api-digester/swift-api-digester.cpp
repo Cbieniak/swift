@@ -954,7 +954,7 @@ static StringRef getTypeName(SDKContext &Ctx, Type Ty) {
   if (Ty->isVoid()) {
     return Ctx.buffer("Void");
   }
-  if (NameAliasType *NAT = dyn_cast<NameAliasType>(Ty.getPointer())) {
+  if (auto *NAT = dyn_cast<NameAliasType>(Ty.getPointer())) {
     return NAT->getDecl()->getNameStr();
   }
   if (Ty->getAnyNominal()) {
@@ -1004,7 +1004,8 @@ static StringRef getPrintedName(SDKContext &Ctx, ValueDecl *VD) {
   if (auto FD = dyn_cast<AbstractFunctionDecl>(VD)) {
     auto DM = FD->getFullName();
 
-    Result.append(DM.getBaseName().empty() ? "_" : DM.getBaseName().str());
+    // TODO: Handle special names
+    Result.append(DM.getBaseName().empty() ? "_" :DM.getBaseIdentifier().str());
     Result.append("(");
     for (auto Arg : DM.getArgumentNames()) {
       Result.append(Arg.empty() ? "_" : Arg.str());
@@ -1014,7 +1015,8 @@ static StringRef getPrintedName(SDKContext &Ctx, ValueDecl *VD) {
     return Ctx.buffer(Result.str());
   }
   auto DM = VD->getFullName();
-  Result.append(DM.getBaseName().str());
+  // TODO: Handle special names
+  Result.append(DM.getBaseIdentifier().str());
   return Ctx.buffer(Result.str());
 }
 
@@ -1053,8 +1055,9 @@ SDKNodeInitInfo::SDKNodeInitInfo(SDKContext &Ctx, Type Ty) :
     TypeAttrs.push_back(TypeAttrKind::TAK_noescape);
 }
 
+// TODO: Handle special names
 SDKNodeInitInfo::SDKNodeInitInfo(SDKContext &Ctx, ValueDecl *VD) : Ctx(Ctx),
-    Name(VD->hasName() ? VD->getName().str() : Ctx.buffer("_")),
+    Name(VD->hasName() ? VD->getBaseName().getIdentifier().str() : Ctx.buffer("_")),
     PrintedName(getPrintedName(Ctx, VD)), DKind(VD->getKind()),
     USR(calculateUsr(Ctx, VD)), Location(calculateLocation(Ctx, VD)),
     ModuleName(VD->getModuleContext()->getName().str()),
@@ -1163,7 +1166,7 @@ static bool shouldIgnore(Decl *D) {
   if (auto VD = dyn_cast<ValueDecl>(D)) {
     if (VD->isOperator())
       return true;
-    if (VD->getName().empty())
+    if (VD->getBaseName().empty())
       return true;
     switch (VD->getFormalAccess()) {
     case Accessibility::Internal:
@@ -2156,9 +2159,15 @@ class TypeMemberDiffFinder : public SDKNodeVisitor {
     auto diffParent = diffNode->getParent();
     assert(nodeParent && diffParent && "trying to check Root?");
 
+    // Move from global variable to a member variable.
     if (nodeParent->getKind() == SDKNodeKind::TypeDecl &&
         diffParent->getKind() == SDKNodeKind::Root)
       TypeMemberDiffs.push_back({diffNode, node});
+    // Move from a member variable to another member variable
+    if (nodeParent->getKind() == SDKNodeKind::TypeDecl &&
+        diffParent->getKind() == SDKNodeKind::TypeDecl)
+      TypeMemberDiffs.push_back({diffNode, node});
+    // Move from a getter/setter function to a property
     else if (node->getKind() == SDKNodeKind::Getter &&
              diffNode->getKind() == SDKNodeKind::Function &&
              node->isNameValid()) {
@@ -2471,7 +2480,7 @@ class DiffItemEmitter : public SDKNodeVisitor {
   }
 
   void visit(NodePtr Node) override {
-    SDKNodeDecl *Parent = dyn_cast<SDKNodeDecl>(Node);
+    auto *Parent = dyn_cast<SDKNodeDecl>(Node);
     if (!Parent) {
       if (auto TN = dyn_cast<SDKNodeType>(Node)) {
         Parent = TN->getClosestParentDecl();
@@ -2995,6 +3004,7 @@ static void findTypeMemberDiffs(NodePtr leftSDKRoot, NodePtr rightSDKRoot,
   RenameDetectorForMemberDiff Detector;
   for (auto pair : diffFinder.getDiffs()) {
     auto left = pair.first;
+    auto leftParent = left->getParent();
     auto right = pair.second;
     auto rightParent = right->getParent();
 
@@ -3002,7 +3012,10 @@ static void findTypeMemberDiffs(NodePtr leftSDKRoot, NodePtr rightSDKRoot,
     // index, old printed name)
     TypeMemberDiffItem item = {
         right->getAs<SDKNodeDecl>()->getUsr(), constructFullTypeName(rightParent),
-        right->getPrintedName(), findSelfIndex(right), left->getPrintedName()};
+        right->getPrintedName(), findSelfIndex(right), None,
+        leftParent->getKind() == SDKNodeKind::Root ?
+          StringRef() : constructFullTypeName(leftParent),
+        left->getPrintedName()};
     out.emplace_back(item);
     Detector.workOn(left, right);
   }

@@ -41,9 +41,11 @@
 #include "llvm/IR/Module.h"
 #include "llvm/IR/TypeBuilder.h"
 #include "llvm/IR/Value.h"
+#include "llvm/IR/InlineAsm.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/ConvertUTF.h"
 #include "llvm/Support/Path.h"
+#include "llvm/Transforms/Utils/ModuleUtils.h"
 
 #include "ConstantBuilder.h"
 #include "Explosion.h"
@@ -57,7 +59,9 @@
 #include "GenType.h"
 #include "IRGenDebugInfo.h"
 #include "IRGenFunction.h"
+#include "IRGenMangler.h"
 #include "IRGenModule.h"
+#include "LoadableTypeInfo.h"
 
 using namespace swift;
 using namespace irgen;
@@ -162,6 +166,8 @@ public:
   void visitTypeDecl(TypeDecl *type) {
     // We'll visit nested types separately if necessary.
   }
+
+  void visitMissingMemberDecl(MissingMemberDecl *placeholder) {}
   
   void visitFuncDecl(FuncDecl *method) {
     if (!requiresObjCMethodDescriptor(method)) return;
@@ -375,6 +381,8 @@ public:
     // We'll visit nested types separately if necessary.
   }
 
+  void visitMissingMemberDecl(MissingMemberDecl *placeholder) {}
+
   void visitAbstractFunctionDecl(AbstractFunctionDecl *method) {
     llvm::Constant *name, *imp, *types;
     emitObjCMethodDescriptorParts(IGM, method, /*extended*/true,
@@ -562,7 +570,7 @@ void IRGenModule::emitRuntimeRegistration() {
     for (SILFunction &SF : getSILModule()) {
       if (SF.hasLocation()) {
         if (Decl* D = SF.getLocation().getAsASTNode<Decl>()) {
-          if (FuncDecl *FD = dyn_cast<FuncDecl>(D)) {
+          if (auto *FD = dyn_cast<FuncDecl>(D)) {
             if (FD->getAttrs().hasAttribute<LLDBDebuggerFunctionAttr>()) {
               EntryPoint = &SF;
               break;
@@ -738,11 +746,6 @@ hasExplicitProtocolConformance(NominalTypeDecl *decl) {
 
     // @objc protocols do not have conformance records
     if (P->isObjC())
-      continue;
-
-    // neither does AnyObject
-    if (P->getKnownProtocolKind().hasValue() &&
-        *P->getKnownProtocolKind() == KnownProtocolKind::AnyObject)
       continue;
 
     return true;
@@ -945,6 +948,56 @@ void IRGenerator::emitLazyDefinitions() {
   }
 }
 
+void IRGenerator::emitNSArchiveClassNameRegistration() {
+  if (ClassesForArchiveNameRegistration.empty())
+    return;
+
+  // Emit the register function in the primary module.
+  IRGenModule *IGM = getPrimaryIGM();
+
+  llvm::Function *RegisterFn = llvm::Function::Create(
+                                llvm::FunctionType::get(IGM->VoidTy, false),
+                                llvm::GlobalValue::InternalLinkage,
+                                "_swift_register_class_names_for_archives");
+  IRGenFunction RegisterIGF(*IGM, RegisterFn);
+  RegisterFn->setAttributes(IGM->constructInitialAttributes());
+  IGM->Module.getFunctionList().push_back(RegisterFn);
+  RegisterFn->setCallingConv(IGM->DefaultCC);
+
+  for (ClassDecl *CD : ClassesForArchiveNameRegistration) {
+    Type Ty = CD->getDeclaredType();
+    llvm::Value *MetaData = RegisterIGF.emitTypeMetadataRef(getAsCanType(Ty));
+    if (auto *LegacyAttr = CD->getAttrs().
+          getAttribute<NSKeyedArchiverClassNameAttr>()) {
+      // Register the name for the class in the NSKeyed(Un)Archiver.
+      llvm::Value *NameStr = IGM->getAddrOfGlobalString(LegacyAttr->Name);
+      RegisterIGF.Builder.CreateCall(IGM->getRegisterClassNameForArchivingFn(),
+                                     {NameStr, MetaData});
+    } else {
+      assert(CD->getAttrs().hasAttribute<StaticInitializeObjCMetadataAttr>());
+
+      // In this case we don't add a name mapping, but just get the metadata
+      // to make sure that the class is registered. But: we need to add a use
+      // (empty inline asm instruction) for the metadata. Otherwise
+      // llvm would optimize the metadata accessor call away because it's
+      // defined as "readnone".
+      llvm::FunctionType *asmFnTy =
+        llvm::FunctionType::get(IGM->VoidTy, {MetaData->getType()},
+                                false /* = isVarArg */);
+      llvm::InlineAsm *inlineAsm =
+        llvm::InlineAsm::get(asmFnTy, "", "r", true /* = SideEffects */);
+      RegisterIGF.Builder.CreateCall(inlineAsm, MetaData);
+    }
+  }
+  RegisterIGF.Builder.CreateRetVoid();
+
+  // Add the registration function as a static initializer. We use a priority
+  // slightly lower than used for C++ global constructors, so that the code is
+  // executed before C++ global constructors (in case someone uses archives
+  // from a C++ global constructor).
+  llvm::appendToGlobalCtors(IGM->Module, RegisterFn, 60000, nullptr);
+}
+
 /// Emit symbols for eliminated dead methods, which can still be referenced
 /// from other modules. This happens e.g. if a public class contains a (dead)
 /// private method.
@@ -973,6 +1026,10 @@ void IRGenModule::emitVTableStubs() {
     // For each eliminated method symbol create an alias to the stub.
     auto *alias = llvm::GlobalAlias::create(llvm::GlobalValue::ExternalLinkage,
                                             F.getName(), stub);
+
+    if (F.getEffectiveSymbolLinkage() == SILLinkage::Hidden)
+      alias->setVisibility(llvm::GlobalValue::HiddenVisibility);
+
     if (useDllStorage())
       alias->setDLLStorageClass(llvm::GlobalValue::DLLExportStorageClass);
   }
@@ -1387,8 +1444,12 @@ getIRLinkage(const UniversalLinkageInfo &info, SILLinkage linkage,
   case SILLinkage::Private:
     // In case of multiple llvm modules (in multi-threaded compilation) all
     // private decls must be visible from other files.
+    // We use LinkOnceODR instead of External here because private lazy protocol
+    // witness table accessors could be emitted by two different IGMs during
+    // IRGen into different object files and the linker would complain about
+    // duplicate symbols.
     if (info.HasMultipleIGMs)
-      return RESULT(External, Hidden, Default);
+      return RESULT(LinkOnceODR, Hidden, Default);
     return RESULT(Internal, Default, Default);
 
   case SILLinkage::PublicExternal: {
@@ -1610,6 +1671,9 @@ void IRGenModule::emitGlobalDecl(Decl *D) {
 
   case DeclKind::Destructor:
     llvm_unreachable("there are no global destructor");
+
+  case DeclKind::MissingMember:
+    llvm_unreachable("there are no global member placeholders");
 
   case DeclKind::TypeAlias:
   case DeclKind::GenericTypeParam:
@@ -2143,7 +2207,7 @@ getTypeEntityInfo(IRGenModule &IGM, CanType conformingType) {
     }
   } else {
     // Metadata for Clang types should be uniqued like foreign classes.
-    if (nom->hasClangNode()) {
+    if (isa<ClangModuleUnit>(nom->getModuleScopeContext())) {
       typeKind = TypeMetadataRecordKind::NonuniqueDirectType;
       entity = LinkEntity::forForeignTypeMetadataCandidate(conformingType);
       defaultTy = IGM.TypeMetadataStructTy;
@@ -2662,9 +2726,8 @@ ConstantReference IRGenModule::getAddrOfTypeMetadata(CanType concreteType,
               "foreign candidate");
     defaultVarTy = TypeMetadataStructTy;
     adjustmentIndex = 0;
-  } else if (concreteType->getAnyNominal()) {
-    auto nom = concreteType->getNominalOrBoundGenericNominal();
-    assert((!nom || !nom->hasClangNode())
+  } else if (auto nom = concreteType->getAnyNominal()) {
+    assert(!isa<ClangModuleUnit>(nom->getModuleScopeContext())
            && "metadata for foreign type should be emitted as "
               "foreign candidate");
     (void)nom;
@@ -2755,12 +2818,11 @@ Optional<llvm::Function*> IRGenModule::getAddrOfIVarInitDestroy(
                             bool isDestroyer,
                             bool isForeign,
                             ForDefinition_t forDefinition) {
-  SILDeclRef silRef(cd, 
-                    isDestroyer? SILDeclRef::Kind::IVarDestroyer
-                               : SILDeclRef::Kind::IVarInitializer, 
-                    ResilienceExpansion::Minimal,
-                    SILDeclRef::ConstructAtNaturalUncurryLevel, 
-                    isForeign);
+  auto silRef = SILDeclRef(cd,
+                           isDestroyer
+                           ? SILDeclRef::Kind::IVarDestroyer
+                           : SILDeclRef::Kind::IVarInitializer)
+    .asForeign(isForeign);
 
   // Find the SILFunction for the ivar initializer or destroyer.
   if (auto silFn = getSILModule().lookUpFunction(silRef)) {
@@ -2872,6 +2934,7 @@ void IRGenModule::emitNestedTypeDecls(DeclRange members) {
     case DeclKind::Destructor:
     case DeclKind::EnumCase:
     case DeclKind::EnumElement:
+    case DeclKind::MissingMember:
       // Skip non-type members.
       continue;
 
@@ -3418,7 +3481,7 @@ IRGenModule::getAddrOfAssociatedTypeWitnessTableAccessFunction(
 static llvm::Function *shouldDefineHelper(IRGenModule &IGM,
                                           llvm::Constant *fn,
                                           bool setIsNoInline) {
-  llvm::Function *def = dyn_cast<llvm::Function>(fn);
+  auto *def = dyn_cast<llvm::Function>(fn);
   if (!def) return nullptr;
   if (!def->empty()) return nullptr;
 
@@ -3460,3 +3523,46 @@ IRGenModule::getOrCreateHelperFunction(StringRef fnName, llvm::Type *resultTy,
   return fn;
 }
 
+llvm::Constant *IRGenModule::getOrCreateRetainFunction(const TypeInfo &objectTI,
+                                                       Type t,
+                                                       llvm::Type *llvmType) {
+  auto *loadableTI = dyn_cast<LoadableTypeInfo>(&objectTI);
+  assert(loadableTI && "Should only be called on Loadable types");
+  IRGenMangler mangler;
+  std::string funcName = mangler.mangleOutlinedRetainFunction(t);
+  llvm::Type *argTys[] = {llvmType};
+  return getOrCreateHelperFunction(
+      funcName, llvmType, argTys,
+      [&](IRGenFunction &IGF) {
+        auto it = IGF.CurFn->arg_begin();
+        Address addr(&*it++, loadableTI->getFixedAlignment());
+        Explosion loaded;
+        loadableTI->loadAsTake(IGF, addr, loaded);
+        Explosion out;
+        loadableTI->copy(IGF, loaded, out, irgen::Atomicity::Atomic);
+        (void)out.claimAll();
+        IGF.Builder.CreateRet(addr.getAddress());
+      },
+      true /*setIsNoInline*/);
+}
+
+llvm::Constant *
+IRGenModule::getOrCreateReleaseFunction(const TypeInfo &objectTI, Type t,
+                                        llvm::Type *llvmType) {
+  auto *loadableTI = dyn_cast<LoadableTypeInfo>(&objectTI);
+  assert(loadableTI && "Should only be called on Loadable types");
+  IRGenMangler mangler;
+  std::string funcName = mangler.mangleOutlinedReleaseFunction(t);
+  llvm::Type *argTys[] = {llvmType};
+  return getOrCreateHelperFunction(
+      funcName, llvmType, argTys,
+      [&](IRGenFunction &IGF) {
+        auto it = IGF.CurFn->arg_begin();
+        Address addr(&*it++, loadableTI->getFixedAlignment());
+        Explosion loaded;
+        loadableTI->loadAsTake(IGF, addr, loaded);
+        loadableTI->consume(IGF, loaded, irgen::Atomicity::Atomic);
+        IGF.Builder.CreateRet(addr.getAddress());
+      },
+      true /*setIsNoInline*/);
+}

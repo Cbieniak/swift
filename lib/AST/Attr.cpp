@@ -493,6 +493,23 @@ bool DeclAttribute::printImpl(ASTPrinter &Printer, const PrintOptions &Options,
     break;
   }
 
+  case DAK_NSKeyedArchiverClassName: {
+    Printer.printAttrName("@NSKeyedArchiverClassName");
+    Printer << "(";
+    auto *attr = cast<NSKeyedArchiverClassNameAttr>(this);
+    Printer << "\"" << attr->Name << "\"";
+    Printer << ")";
+    break;
+  }
+
+  case DAK_StaticInitializeObjCMetadata:
+    Printer.printAttrName("@_staticInitializeObjCMetadata");
+    break;
+
+  case DAK_DowngradeExhaustivityCheck:
+    Printer.printAttrName("@_downgrade_exhaustivity_check");
+    break;
+    
   case DAK_Count:
     llvm_unreachable("exceed declaration attribute kinds");
 
@@ -609,6 +626,8 @@ StringRef DeclAttribute::getAttrName() const {
     return "_specialize";
   case DAK_Implements:
     return "_implements";
+  case DAK_NSKeyedArchiverClassName:
+    return "NSKeyedArchiverClassName";
   }
   llvm_unreachable("bad DeclAttrKind");
 }

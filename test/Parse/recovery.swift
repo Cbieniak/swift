@@ -297,7 +297,7 @@ _ = foobar // OK.
 //===--- Recovery for parse errors in types.
 
 struct ErrorTypeInVarDecl1 {
-  var v1 : // expected-error {{expected type}}
+  var v1 : // expected-error {{expected type}} {{11-11= <#type#>}}
 }
 
 struct ErrorTypeInVarDecl2 {
@@ -311,7 +311,7 @@ struct ErrorTypeInVarDecl3 {
 }
 
 struct ErrorTypeInVarDecl4 {
-  var v1 : Int<, // expected-error {{expected type}}
+  var v1 : Int<, // expected-error {{expected type}} {{16-16= <#type#>}}
   var v2 : Int
 }
 
@@ -714,7 +714,7 @@ func test23086402(a: A23086402) {
 // and `ss + s` becomes ambiguous. Diambiguation is provided with the unavailable overload
 // in order to produce a meaningful diagnostics. (Related: <rdar://problem/31763930>)
 func test23550816(ss: [String], s: String) {
-  print(ss + s)  // expected-error {{'+' is unavailable: Operator '+' cannot be used to append a String to a seqeunce of strings}}
+  print(ss + s)  // expected-error {{'+' is unavailable: Operator '+' cannot be used to append a String to a sequence of strings}}
 }
 
 // <rdar://problem/23719432> [practicalswift] Compiler crashes on &(Int:_)

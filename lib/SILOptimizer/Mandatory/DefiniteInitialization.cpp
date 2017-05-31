@@ -25,6 +25,7 @@
 #include "llvm/ADT/SmallBitVector.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/Debug.h"
 
@@ -889,10 +890,10 @@ void LifetimeChecker::handleLoadUse(unsigned UseID) {
   // If this is an OpenExistentialAddrInst in preparation for applying
   // a witness method, analyze its use to make sure, that no mutation of
   // lvalue let constants occurs.
-  auto* OEAI = dyn_cast<OpenExistentialAddrInst>(LoadInst);
+  auto *OEAI = dyn_cast<OpenExistentialAddrInst>(LoadInst);
   if (OEAI != nullptr && TheMemory.isElementLetProperty(Use.FirstElement)) {
     for (auto OEAUse : OEAI->getUses()) {
-      auto* AI = dyn_cast<ApplyInst>(OEAUse->getUser());
+      auto *AI = dyn_cast<ApplyInst>(OEAUse->getUser());
 
       if (AI == nullptr)
         // User is not an ApplyInst
@@ -1102,9 +1103,9 @@ void LifetimeChecker::handleInOutUse(const DIMemoryUse &Use) {
     // about the method.  The magic numbers used by the diagnostic are:
     // 0 -> method, 1 -> property, 2 -> subscript, 3 -> operator.
     unsigned Case = ~0;
-    Identifier MethodName;
+    DeclBaseName MethodName;
     if (FD && FD->isAccessor()) {
-      MethodName = FD->getAccessorStorageDecl()->getName();
+      MethodName = FD->getAccessorStorageDecl()->getBaseName();
       Case = isa<SubscriptDecl>(FD->getAccessorStorageDecl()) ? 2 : 1;
     } else if (FD && FD->isOperator()) {
       MethodName = FD->getName();
@@ -1382,9 +1383,9 @@ bool LifetimeChecker::diagnoseMethodCall(const DIMemoryUse &Use,
   if (Method) {
     if (!shouldEmitError(Inst)) return true;
 
-    Identifier Name;
+    DeclBaseName Name;
     if (Method->isAccessor())
-      Name = Method->getAccessorStorageDecl()->getName();
+      Name = Method->getAccessorStorageDecl()->getBaseName();
     else
       Name = Method->getName();
 

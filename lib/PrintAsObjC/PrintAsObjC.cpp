@@ -53,8 +53,7 @@ static bool isNSObjectOrAnyHashable(ASTContext &ctx, Type type) {
            classDecl->getModuleContext()->getName() == ctx.Id_ObjectiveC;
   }
   if (auto nomDecl = type->getAnyNominal()) {
-    return nomDecl->getName() == ctx.getIdentifier("AnyHashable") &&
-      nomDecl->getModuleContext() == ctx.getStdlibModule();
+    return nomDecl == ctx.getAnyHashableDecl();
   }
 
   return false;
@@ -215,19 +214,13 @@ public:
 private:
   /// Prints a protocol adoption list: <code>&lt;NSCoding, NSCopying&gt;</code>
   ///
-  /// This method filters out non-ObjC protocols, along with the special
-  /// AnyObject protocol.
+  /// This method filters out non-ObjC protocols.
   void printProtocols(ArrayRef<ProtocolDecl *> protos) {
     SmallVector<ProtocolDecl *, 4> protosToPrint;
     std::copy_if(protos.begin(), protos.end(),
                  std::back_inserter(protosToPrint),
                  [this](const ProtocolDecl *PD) -> bool {
-      if (!shouldInclude(PD))
-        return false;
-      auto knownProtocol = PD->getKnownProtocolKind();
-      if (!knownProtocol)
-        return true;
-      return *knownProtocol != KnownProtocolKind::AnyObject;
+      return shouldInclude(PD);
     });
 
     // Drop protocols from the list that are implied by other protocols.
@@ -558,8 +551,8 @@ private:
     auto paramLists = AFD->getParameterLists();
     assert(paramLists.size() == 2 && "not an ObjC-compatible method");
 
-    ArrayRef<Identifier> selectorPieces
-      = AFD->getObjCSelector().getSelectorPieces();
+    auto selector = AFD->getObjCSelector();
+    ArrayRef<Identifier> selectorPieces = selector.getSelectorPieces();
     
     const auto &params = paramLists[1]->getArray();
     unsigned paramIndex = 0;
@@ -703,15 +696,17 @@ private:
           if (AvAttr->PlatformAgnostic == PlatformAgnosticAvailabilityKind::Unavailable) {
             // Availability for *
             if (!AvAttr->Rename.empty()) {
-                // NB: Don't bother getting obj-c names, we can't get one for the rename
-                os << " SWIFT_UNAVAILABLE_MSG(\"'" << VD->getName() << "' has been renamed to '";
-                printEncodedString(AvAttr->Rename, false);
-                os << '\'';
-                if (!AvAttr->Message.empty()) {
-                  os << ": ";
-                  printEncodedString(AvAttr->Message, false);
-                }
-                os << "\")";
+              // NB: Don't bother getting obj-c names, we can't get one for the
+              // rename
+              os << " SWIFT_UNAVAILABLE_MSG(\"'" << VD->getBaseName()
+                 << "' has been renamed to '";
+              printEncodedString(AvAttr->Rename, false);
+              os << '\'';
+              if (!AvAttr->Message.empty()) {
+                os << ": ";
+                printEncodedString(AvAttr->Message, false);
+              }
+              os << "\")";
             } else if (!AvAttr->Message.empty()) {
               os << " SWIFT_UNAVAILABLE_MSG(";
               printEncodedString(AvAttr->Message);
@@ -797,7 +792,8 @@ private:
           }
           if (!AvAttr->Rename.empty()) {
             // NB: Don't bother getting obj-c names, we can't get one for the rename
-            os << ",message=\"'" << VD->getName() << "' has been renamed to '";
+            os << ",message=\"'" << VD->getBaseName()
+               << "' has been renamed to '";
             printEncodedString(AvAttr->Rename, false);
             os << '\'';
             if (!AvAttr->Message.empty()) {
@@ -816,11 +812,16 @@ private:
   }
 
   void printSwift3ObjCDeprecatedInference(ValueDecl *VD) {
+    const LangOptions &langOpts = M.getASTContext().LangOpts;
+    if (!langOpts.EnableSwift3ObjCInference ||
+        langOpts.WarnSwift3ObjCInference == Swift3ObjCInferenceWarnings::None) {
+      return;
+    }
     auto attr = VD->getAttrs().getAttribute<ObjCAttr>();
     if (!attr || !attr->isSwift3Inferred())
       return;
 
-    os << " SWIFT_DEPRECATED_MSG(\"Swift ";
+    os << " SWIFT_DEPRECATED_OBJC(\"Swift ";
     if (isa<VarDecl>(VD))
       os << "property";
     else if (isa<SubscriptDecl>(VD))
@@ -1363,11 +1364,23 @@ private:
       return;
 
     if (alias->hasClangNode()) {
-      auto *clangTypeDecl = cast<clang::TypeDecl>(alias->getClangDecl());
-      os << clangTypeDecl->getName();
+      if (auto *clangTypeDecl =
+            dyn_cast<clang::TypeDecl>(alias->getClangDecl())) {
+        os << clangTypeDecl->getName();
 
-      if (isClangPointerType(clangTypeDecl))
+        if (isClangPointerType(clangTypeDecl))
+          printNullability(optionalKind);
+      } else if (auto *clangObjCClass
+                   = dyn_cast<clang::ObjCInterfaceDecl>(alias->getClangDecl())){
+        os << clangObjCClass->getName() << " *";
         printNullability(optionalKind);
+      } else {
+        auto *clangCompatAlias =
+          cast<clang::ObjCCompatibleAliasDecl>(alias->getClangDecl());
+        os << clangCompatAlias->getName() << " *";
+        printNullability(optionalKind);
+      }
+
       return;
     }
 
@@ -1901,16 +1914,7 @@ class ReferencedTypeFinder : public TypeVisitor<ReferencedTypeFinder> {
       return true;
 
     auto conformsTo = sig->getConformsTo(paramTy, mod);
-
-    if (conformsTo.size() > 1)
-      return true;
-    if (conformsTo.size() == 0)
-      return false;
-
-    const ProtocolDecl *proto = conformsTo.front();
-    if (auto knownKind = proto->getKnownProtocolKind())
-      return knownKind.getValue() != KnownProtocolKind::AnyObject;
-    return true;
+    return conformsTo.size() > 0;
   }
 
   void visitBoundGenericType(BoundGenericType *boundGeneric) {
@@ -1996,7 +2000,8 @@ public:
 
     if (otherModule == &M)
       return false;
-    if (otherModule->isStdlibModule())
+    if (otherModule->isStdlibModule() ||
+        otherModule->isBuiltinModule())
       return true;
     // Don't need a module for SIMD types in C.
     if (otherModule->getName() == M.getASTContext().Id_simd)
@@ -2077,7 +2082,6 @@ public:
 
   void forwardDeclare(const ProtocolDecl *PD) {
     assert(PD->isObjC() ||
-           *PD->getKnownProtocolKind() == KnownProtocolKind::AnyObject ||
            *PD->getKnownProtocolKind() == KnownProtocolKind::Error);
     forwardDeclare(PD, [&]{
       os << "@protocol " << getNameForObjC(PD) << ";\n";
@@ -2238,10 +2242,6 @@ public:
     if (addImport(PD))
       return true;
 
-    auto knownProtocol = PD->getKnownProtocolKind();
-    if (knownProtocol && *knownProtocol == KnownProtocolKind::AnyObject)
-      return true;
-
     if (seenTypes[PD].first == EmissionState::Defined)
       return true;
 
@@ -2320,6 +2320,7 @@ public:
     out << "// Generated by " << version::getSwiftFullVersion(
       M.getASTContext().LangOpts.EffectiveLanguageVersion) << "\n"
            "#pragma clang diagnostic push\n"
+           "#pragma clang diagnostic ignored \"-Wgcc-compat\"\n"
            "\n"
            "#if !defined(__has_include)\n"
            "# define __has_include(x) 0\n"
@@ -2330,6 +2331,25 @@ public:
            "#if !defined(__has_feature)\n"
            "# define __has_feature(x) 0\n"
            "#endif\n"
+           "#if !defined(__has_warning)\n"
+           "# define __has_warning(x) 0\n"
+           "#endif\n"
+           "\n"
+           "#if __has_attribute(external_source_symbol)\n"
+           "# define SWIFT_STRINGIFY(str) #str\n"
+           "# define SWIFT_MODULE_NAMESPACE_PUSH(module_name) "
+             "_Pragma(SWIFT_STRINGIFY(clang attribute "
+             "push(__attribute__((external_source_symbol(language=\"Swift\", "
+             "defined_in=module_name, generated_declaration))), "
+             "apply_to=any(function, enum, objc_interface, objc_category, "
+             "objc_protocol))))\n"
+           "# define SWIFT_MODULE_NAMESPACE_POP "
+             "_Pragma(\"clang attribute pop\")\n"
+           "#else\n"
+           "# define SWIFT_MODULE_NAMESPACE_PUSH(module_name)\n"
+           "# define SWIFT_MODULE_NAMESPACE_POP\n"
+           "#endif\n"
+           "\n"
            "#if __has_include(<swift/objc-prologue.h>)\n"
            "# include <swift/objc-prologue.h>\n"
            "#endif\n"
@@ -2492,6 +2512,11 @@ public:
            "#if !defined(SWIFT_DEPRECATED_MSG)\n"
            "# define SWIFT_DEPRECATED_MSG(...) __attribute__((deprecated(__VA_ARGS__)))\n"
            "#endif\n"
+           "#if __has_feature(attribute_diagnose_if_objc)\n"
+           "# define SWIFT_DEPRECATED_OBJC(Msg) __attribute__((diagnose_if(1, Msg, \"warning\")))\n"
+           "#else\n"
+           "# define SWIFT_DEPRECATED_OBJC(Msg) SWIFT_DEPRECATED_MSG(Msg)\n"
+           "#endif\n"
            ;
     static_assert(SWIFT_MAX_IMPORTED_SIMD_ELEMENTS == 4,
                 "need to add SIMD typedefs here if max elements is increased");
@@ -2579,8 +2604,9 @@ public:
       assert(*lhs != *rhs && "duplicate top-level decl");
 
       auto getSortName = [](const Decl *D) -> StringRef {
+        // TODO: Handle special names
         if (auto VD = dyn_cast<ValueDecl>(D))
-          return VD->getName().str();
+          return VD->getBaseName().getIdentifier().str();
 
         if (auto ED = dyn_cast<ExtensionDecl>(D)) {
           auto baseClass = ED->getExtendedType()->getClassOrBoundGenericClass();
@@ -2682,8 +2708,15 @@ public:
     out <<
         "#pragma clang diagnostic ignored \"-Wproperty-attribute-mismatch\"\n"
         "#pragma clang diagnostic ignored \"-Wduplicate-method-arg\"\n"
+        "#if __has_warning(\"-Wpragma-clang-attribute\")\n"
+        "# pragma clang diagnostic ignored \"-Wpragma-clang-attribute\"\n"
+        "#endif\n"
+        "#pragma clang diagnostic ignored \"-Wunknown-pragmas\"\n"
+        "\n"
+        "SWIFT_MODULE_NAMESPACE_PUSH(\"" << M.getNameStr() << "\")\n"
       << os.str()
-      << "#pragma clang diagnostic pop\n";
+      << "SWIFT_MODULE_NAMESPACE_POP\n"
+         "#pragma clang diagnostic pop\n";
     return false;
   }
 };

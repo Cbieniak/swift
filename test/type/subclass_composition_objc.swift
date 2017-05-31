@@ -1,4 +1,4 @@
-// RUN: %target-typecheck-verify-swift -enable-experimental-subclass-existentials -disable-objc-attr-requires-foundation-module
+// RUN: %target-typecheck-verify-swift -disable-objc-attr-requires-foundation-module
 
 @objc class ObjCClass {}
 @objc protocol ObjCProtocol {}
@@ -57,4 +57,13 @@ func testSelfConformance(cp: ObjCClass & StaticObjCProtocol) {
   // expected-error@-1 {{cannot invoke 'takesStaticObjCProtocol' with an argument list of type '(ObjCClass & StaticObjCProtocol)'}}
   // expected-note@-2 {{expected an argument list of type '(T)'}}
 
+}
+
+func testMetatypeSelfConformance(m1: (ObjCClass & ObjCProtocol).Protocol,
+                                 m2: (ObjCClass & StaticObjCProtocol).Protocol) {
+  _ = m1 as (ObjCClass & ObjCProtocol).Type
+  _ = m1 as? (ObjCClass & ObjCProtocol).Type // expected-warning {{always succeeds}}
+
+  _ = m2 as (ObjCClass & StaticObjCProtocol).Type // expected-error {{'(ObjCClass & StaticObjCProtocol).Protocol' is not convertible to '(ObjCClass & StaticObjCProtocol).Type'; did you mean to use 'as!' to force downcast?}}
+  _ = m2 as? (ObjCClass & StaticObjCProtocol).Type // FIXME should 'always fail'
 }

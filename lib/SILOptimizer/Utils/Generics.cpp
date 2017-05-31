@@ -24,7 +24,7 @@ using namespace swift;
 
 /// Set to true to enable the support for partial specialization.
 llvm::cl::opt<bool> EnablePartialSpecialization(
-    "sil-partial-specialization", llvm::cl::init(true),
+    "sil-partial-specialization", llvm::cl::init(false),
     llvm::cl::desc("Enable partial specialization of generics"));
 
 /// If set, then generic specialization tries to specialize using
@@ -312,7 +312,7 @@ ReabstractionInfo::ReabstractionInfo(ApplySite Apply, SILFunction *Callee,
 
   SILFunction *Caller = nullptr;
   if (Apply)
-    Caller = Apply.getCalleeFunction();
+    Caller = Apply.getFunction();
 
   if (!EnablePartialSpecialization || !HasUnboundGenericParams) {
     // Fast path for full specializations.
@@ -576,18 +576,6 @@ createSpecializedType(CanSILFunctionType SubstFTy, SILModule &M) const {
                          M.getASTContext());
 }
 
-/// Create a new generic signature and generic environment using
-/// a provided builder.
-static std::pair<GenericEnvironment *, GenericSignature *>
-getGenericEnvironmentAndSignature(GenericSignatureBuilder &Builder,
-                                  SILModule &M) {
-  auto *GenericSig =
-      Builder.getGenericSignature()->getCanonicalSignature().getPointer();
-  auto *GenericEnv = GenericSig->createGenericEnvironment(*M.getSwiftModule());
-  assert(!GenericSig || GenericEnv);
-  return std::make_pair(GenericEnv, GenericSig);
-}
-
 /// Create a new generic signature from an existing one by adding
 /// additional requirements.
 static std::pair<GenericEnvironment *, GenericSignature *>
@@ -609,9 +597,11 @@ getGenericEnvironmentAndSignatureWithRequirements(
     Builder.addRequirement(Req, Source, M.getSwiftModule());
   }
 
-  Builder.finalize(SourceLoc(), OrigGenSig->getGenericParams(),
-                   /*allowConcreteGenericParams=*/true);
-  return getGenericEnvironmentAndSignature(Builder, M);
+  auto NewGenSig =
+    Builder.computeGenericSignature(SourceLoc(),
+                                   /*allowConcreteGenericParams=*/true);
+  auto NewGenEnv = NewGenSig->createGenericEnvironment(*M.getSwiftModule());
+  return { NewGenEnv, NewGenSig };
 }
 
 /// Perform some sanity checks on the newly formed substitution lists.
@@ -620,10 +610,12 @@ static void verifySubstitutionList(SubstitutionList Subs, StringRef Name) {
         for (auto Sub : Subs) {
           Sub.getReplacement()->dump();
         });
+#ifndef NDEBUG
   for (auto Sub : Subs) {
     assert(!Sub.getReplacement()->hasError() &&
            "There should be no error types in substitutions");
   }
+#endif
 }
 
 /// This is a fast path for full specializations.
@@ -846,7 +838,7 @@ namespace swift {
 
 /// A helper class for creating partially specialized function signatures.
 ///
-/// The following naming convention is used to describe the memebrs and
+/// The following naming convention is used to describe the members and
 /// functions:
 /// Caller - the function which invokes the callee.
 /// Callee - the callee to be specialized.
@@ -1115,6 +1107,7 @@ void FunctionSignaturePartialSpecializer::
     // Create an equivalent generic parameter.
     auto SubstGenericParam = createGenericParam();
     auto SubstGenericParamCanTy = SubstGenericParam->getCanonicalType();
+    (void)SubstGenericParamCanTy;
 
     CallerInterfaceToSpecializedInterfaceMapping
         [CallerGenericParam->getCanonicalType()
@@ -1284,21 +1277,20 @@ void FunctionSignaturePartialSpecializer::addCalleeRequirements() {
 std::pair<GenericEnvironment *, GenericSignature *>
 FunctionSignaturePartialSpecializer::
     getSpecializedGenericEnvironmentAndSignature() {
+  if (AllGenericParams.empty())
+    return { nullptr, nullptr };
+
   // Finalize the archetype builder.
-  Builder.finalize(SourceLoc(), AllGenericParams,
-                   /*allowConcreteGenericParams=*/true);
-  // Get the specialized generic signature and generic environment.
-  if (!AllGenericParams.empty()) {
-    return getGenericEnvironmentAndSignature(Builder, M);
-  }
-  return std::make_pair(nullptr, nullptr);
+  auto GenSig =
+      Builder.computeGenericSignature(SourceLoc(),
+                                      /*allowConcreteGenericParams=*/true);
+  auto GenEnv = GenSig->createGenericEnvironment(*M.getSwiftModule());
+  return { GenEnv, GenSig };
 }
 
 void FunctionSignaturePartialSpecializer::computeClonerParamSubs(
     SubstitutionList &ClonerParamSubs) {
-  SmallVector<Substitution, 4> List;
-
-  CalleeGenericSig->getSubstitutions(
+  auto SubMap = CalleeGenericSig->getSubstitutionMap(
       [&](SubstitutableType *type) -> Type {
         DEBUG(llvm::dbgs() << "\ngetSubstitution for ClonerParamSubs:\n"
                            << Type(type) << "\n"
@@ -1309,8 +1301,10 @@ void FunctionSignaturePartialSpecializer::computeClonerParamSubs(
         return SpecializedGenericEnv->mapTypeIntoContext(
             SpecializedInterfaceTy);
       },
-      LookUpConformanceInSignature(*SpecializedGenericSig), List);
+      LookUpConformanceInSignature(*SpecializedGenericSig));
 
+  SmallVector<Substitution, 4> List;
+  CalleeGenericSig->getSubstitutions(SubMap, List);
   ClonerParamSubs = Ctx.AllocateCopy(List);
   verifySubstitutionList(ClonerParamSubs, "ClonerParamSubs");
 }
@@ -1761,9 +1755,8 @@ static ApplySite replaceWithSpecializedCallee(ApplySite AI,
   if (auto *TAI = dyn_cast<TryApplyInst>(AI)) {
     SILBasicBlock *ResultBB = TAI->getNormalBB();
     assert(ResultBB->getSinglePredecessorBlock() == TAI->getParent());
-    auto *NewTAI =
-        Builder.createTryApply(Loc, Callee, CalleeSILSubstFnTy, Subs, Arguments,
-                               ResultBB, TAI->getErrorBB());
+    auto *NewTAI = Builder.createTryApply(Loc, Callee, Subs, Arguments,
+                                          ResultBB, TAI->getErrorBB());
     if (StoreResultTo) {
       assert(substConv.useLoweredAddresses());
       // The original normal result of the try_apply is an empty tuple.
@@ -1781,9 +1774,8 @@ static ApplySite replaceWithSpecializedCallee(ApplySite AI,
     return NewTAI;
   }
   if (auto *A = dyn_cast<ApplyInst>(AI)) {
-    auto *NewAI = Builder.createApply(Loc, Callee, CalleeSILSubstFnTy,
-                                      substConv.getSILResultType(), Subs,
-                                      Arguments, A->isNonThrowing());
+    auto *NewAI = Builder.createApply(Loc, Callee, Subs, Arguments,
+                                      A->isNonThrowing());
     if (StoreResultTo) {
       assert(substConv.useLoweredAddresses());
       if (!CalleeSILSubstFnTy.isNoReturnFunction()) {
@@ -1804,14 +1796,9 @@ static ApplySite replaceWithSpecializedCallee(ApplySite AI,
     return NewAI;
   }
   if (auto *PAI = dyn_cast<PartialApplyInst>(AI)) {
-    CanSILFunctionType NewPAType = ReInfo.createSpecializedType(
-        PAI->getFunctionType(), Builder.getModule());
-    // SILType PTy =
-    // SILType::getPrimitiveObjectType(ReInfo.getSpecializedType());
-    SILType PTy = CalleeSILSubstFnTy;
-    auto *NewPAI =
-        Builder.createPartialApply(Loc, Callee, PTy, Subs, Arguments,
-                                   SILType::getPrimitiveObjectType(NewPAType));
+    auto *NewPAI = Builder.createPartialApply(
+        Loc, Callee, Subs, Arguments,
+        PAI->getType().getAs<SILFunctionType>()->getCalleeConvention());
     PAI->replaceAllUsesWith(NewPAI);
     return NewPAI;
   }
@@ -1886,6 +1873,11 @@ SILFunction *ReabstractionThunkGenerator::createThunk() {
 
   Thunk->setGenericEnvironment(ReInfo.getSpecializedGenericEnvironment());
 
+  // Set proper generic context scope for the type lowering.
+  CanSILFunctionType SpecType = SpecializedFunc->getLoweredFunctionType();
+  Lowering::GenericContextScope GenericScope(M.Types,
+                                             SpecType->getGenericSignature());
+
   SILBasicBlock *EntryBB = Thunk->createBasicBlock();
   SILBuilder Builder(EntryBB);
 
@@ -1935,27 +1927,22 @@ SILValue ReabstractionThunkGenerator::createReabstractionThunkApply(
   SILFunction *Thunk = &Builder.getFunction();
   auto *FRI = Builder.createFunctionRef(Loc, SpecializedFunc);
   auto Subs = Thunk->getForwardingSubstitutions();
-  auto CalleeSubstFnTy = getCalleeSubstFunctionType(FRI, Subs);
-  auto CalleeSILSubstFnTy = SILType::getPrimitiveObjectType(CalleeSubstFnTy);
   auto specConv = SpecializedFunc->getConventions();
-  auto SILResultTy =
-      SpecializedFunc->mapTypeIntoContext(specConv.getSILResultType());
   if (!SpecializedFunc->getLoweredFunctionType()->hasErrorResult()) {
-    return Builder.createApply(Loc, FRI, CalleeSILSubstFnTy,
-                               SILResultTy, Subs, Arguments,
-                               false);
+    return Builder.createApply(Loc, FRI, Subs, Arguments, false);
   }
   // Create the logic for calling a throwing function.
   SILBasicBlock *NormalBB = Thunk->createBasicBlock();
   SILBasicBlock *ErrorBB = Thunk->createBasicBlock();
-  Builder.createTryApply(Loc, FRI, CalleeSILSubstFnTy, Subs,
-                         Arguments, NormalBB, ErrorBB);
-  auto *ErrorVal = ErrorBB->createPHIArgument(specConv.getSILErrorType(),
-                                              ValueOwnershipKind::Owned);
+  Builder.createTryApply(Loc, FRI, Subs, Arguments, NormalBB, ErrorBB);
+  auto *ErrorVal = ErrorBB->createPHIArgument(
+      SpecializedFunc->mapTypeIntoContext(specConv.getSILErrorType()),
+      ValueOwnershipKind::Owned);
   Builder.setInsertionPoint(ErrorBB);
   Builder.createThrow(Loc, ErrorVal);
   SILValue ReturnValue = NormalBB->createPHIArgument(
-      specConv.getSILResultType(), ValueOwnershipKind::Owned);
+      SpecializedFunc->mapTypeIntoContext(specConv.getSILResultType()),
+      ValueOwnershipKind::Owned);
   Builder.setInsertionPoint(NormalBB);
   return ReturnValue;
 }
@@ -1972,12 +1959,10 @@ SILArgument *ReabstractionThunkGenerator::convertReabstractionThunkArguments(
   CanSILFunctionType SpecType = SpecializedFunc->getLoweredFunctionType();
   CanSILFunctionType SubstType = ReInfo.getSubstitutedType();
   auto specConv = SpecializedFunc->getConventions();
+  (void)specConv;
   SILFunctionConventions substConv(SubstType, M);
 
   assert(specConv.useLoweredAddresses());
-
-  Lowering::GenericContextScope GenericScope(M.Types,
-                                             SpecType->getGenericSignature());
 
   // ReInfo.NumIndirectResults corresponds to SubstTy's formal indirect
   // results. SpecTy may have fewer formal indirect results.
@@ -2163,11 +2148,9 @@ void swift::trySpecializeApplyOfGeneric(
       Arguments.push_back(Op.get());
     }
     auto Subs = ReInfo.getCallerParamSubstitutions();
-    auto CalleeSubstFnTy = getCalleeSubstFunctionType(FRI, Subs);
-    auto CalleeSILSubstFnTy = SILType::getPrimitiveObjectType(CalleeSubstFnTy);
-    auto *NewPAI = Builder.createPartialApply(PAI->getLoc(), FRI,
-                                              CalleeSILSubstFnTy, Subs,
-                                              Arguments, PAI->getType());
+    auto *NewPAI = Builder.createPartialApply(
+        PAI->getLoc(), FRI, Subs, Arguments,
+        PAI->getType().getAs<SILFunctionType>()->getCalleeConvention());
     PAI->replaceAllUsesWith(NewPAI);
     DeadApplies.insert(PAI);
     return;

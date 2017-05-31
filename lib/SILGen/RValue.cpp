@@ -29,7 +29,7 @@ using namespace Lowering;
 
 
 static unsigned getTupleSize(CanType t) {
-  if (TupleType *tt = dyn_cast<TupleType>(t))
+  if (auto tt = dyn_cast<TupleType>(t))
     return tt->getNumElements();
   return 1;
 }
@@ -93,6 +93,7 @@ public:
       auto eltTy = tuple.getType().getTupleElementType(i);
       assert(eltTy.isAddress() == tuple.getType().isAddress());
       auto &eltTI = SGF.getTypeLowering(eltTy);
+      (void)eltTI;
 
       // Project the element.
       assert(eltTI.isLoadable() || !SGF.silConv.useLoweredAddresses());

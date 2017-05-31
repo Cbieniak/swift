@@ -122,44 +122,11 @@ ProtocolConformanceRef::subst(Type origType,
 
   auto *proto = getRequirement();
 
-  // If the original type was an archetype, check the conformance map.
-  if (origType->is<SubstitutableType>()
-      || origType->is<DependentMemberType>()) {
-    if (auto result = conformances(origType->getCanonicalType(),
-                                   substType,
-                                   proto->getDeclaredType())) {
-      return *result;
-    }
-  }
-
-  // If that didn't find anything, we can still synthesize AnyObject
-  // conformances from thin air.  FIXME: this is going away soon.
-  if (proto->isSpecificProtocol(KnownProtocolKind::AnyObject)) {
-    if (substType->isExistentialType())
-      return *this;
-
-    ClassDecl *classDecl = nullptr;
-    auto archetype = substType->getAs<ArchetypeType>();
-
-    if (archetype) {
-      if (archetype->getSuperclass())
-        classDecl = archetype->getSuperclass()->getClassOrBoundGenericClass();
-
-      // A class-constrained archetype without a superclass constraint
-      // conforms to AnyObject abstractly.
-      if (!classDecl && archetype->requiresClass())
-        return ProtocolConformanceRef(proto);
-    } else {
-      classDecl = substType->getClassOrBoundGenericClass();
-    }
-
-    assert(classDecl);
-
-    // Create a concrete conformance based on the conforming class.
-    SmallVector<ProtocolConformance *, 1> lookupResults;
-    classDecl->lookupConformance(classDecl->getParentModule(), proto,
-                                 lookupResults);
-    return ProtocolConformanceRef(lookupResults.front());
+  // Check the conformance map.
+  if (auto result = conformances(origType->getCanonicalType(),
+                                 substType,
+                                 proto->getDeclaredType())) {
+    return *result;
   }
 
   llvm_unreachable("Invalid conformance substitution");
@@ -248,13 +215,16 @@ ProtocolConformance::hasTypeWitness(AssociatedTypeDecl *assocType,
 
 std::pair<Type, TypeDecl *>
 ProtocolConformance::getTypeWitnessAndDecl(AssociatedTypeDecl *assocType,
-                                                LazyResolver *resolver) const {
-  CONFORMANCE_SUBCLASS_DISPATCH(getTypeWitnessAndDecl, (assocType, resolver))
+                                           LazyResolver *resolver,
+                                           SubstOptions options) const {
+  CONFORMANCE_SUBCLASS_DISPATCH(getTypeWitnessAndDecl,
+                                (assocType, resolver, options))
 }
 
 Type ProtocolConformance::getTypeWitness(AssociatedTypeDecl *assocType,
-                                         LazyResolver *resolver) const {
-  return getTypeWitnessAndDecl(assocType, resolver).first;
+                                         LazyResolver *resolver,
+                                         SubstOptions options) const {
+  return getTypeWitnessAndDecl(assocType, resolver, options).first;
 }
 
 ValueDecl *ProtocolConformance::getWitnessDecl(ValueDecl *requirement,
@@ -436,6 +406,7 @@ static bool resolveKnownTypeWitness(NormalProtocolConformance *conformance,
   if (!knownKind) return false;
 
   auto &ctx = nominal->getASTContext();
+  (void)ctx;
 
   // Local function to handle resolution via lookup directly into the nominal
   // type.
@@ -504,22 +475,40 @@ static bool resolveKnownTypeWitness(NormalProtocolConformance *conformance,
 
 std::pair<Type, TypeDecl *>
 NormalProtocolConformance::getTypeWitnessAndDecl(AssociatedTypeDecl *assocType,
-                                                 LazyResolver *resolver) const {
+                                                 LazyResolver *resolver,
+                                                 SubstOptions options) const {
   if (Resolver)
     resolveLazyInfo();
 
+  // Check whether we already have a type witness.
   auto known = TypeWitnesses.find(assocType);
-  if (known == TypeWitnesses.end()) {
-    PrettyStackTraceRequirement trace("resolving", this, assocType);
-    if (!resolveKnownTypeWitness(const_cast<NormalProtocolConformance *>(this),
-                                 assocType)) {
-      assert(resolver && "Unable to resolve type witness");
-      resolver->resolveTypeWitness(this, assocType);
+  if (known != TypeWitnesses.end())
+    return known->second;
+
+  // If this conformance is in a state where it is inferring type witnesses,
+  // check tentative witnesses.
+  if (getState() == ProtocolConformanceState::CheckingTypeWitnesses) {
+    // If there is a tentative-type-witness function, use it.
+    if (options.getTentativeTypeWitness) {
+     if (Type witnessType =
+           Type(options.getTentativeTypeWitness(this, assocType)))
+        return { witnessType, nullptr };
     }
-    known = TypeWitnesses.find(assocType);
-    assert(known != TypeWitnesses.end() && "Didn't resolve witness?");
+
+    // Otherwise, we fail; this is the only case in which we can return a
+    // null type.
+    return { Type(), nullptr };
   }
 
+  // Otherwise, resolve the type witness.
+  PrettyStackTraceRequirement trace("resolving", this, assocType);
+  if (!resolveKnownTypeWitness(const_cast<NormalProtocolConformance *>(this),
+                               assocType)) {
+    assert(resolver && "Unable to resolve type witness");
+    resolver->resolveTypeWitness(this, assocType);
+  }
+  known = TypeWitnesses.find(assocType);
+  assert(known != TypeWitnesses.end() && "Didn't resolve witness?");
   return known->second;
 }
 
@@ -688,7 +677,8 @@ bool SpecializedProtocolConformance::hasTypeWitness(
 std::pair<Type, TypeDecl *>
 SpecializedProtocolConformance::getTypeWitnessAndDecl(
                       AssociatedTypeDecl *assocType, 
-                      LazyResolver *resolver) const {
+                      LazyResolver *resolver,
+                      SubstOptions options) const {
   // If we've already created this type witness, return it.
   auto known = TypeWitnesses.find(assocType);
   if (known != TypeWitnesses.end()) {
@@ -696,31 +686,46 @@ SpecializedProtocolConformance::getTypeWitnessAndDecl(
   }
 
   // Otherwise, perform substitutions to create this witness now.
-  auto *genericEnv = GenericConformance->getGenericEnvironment();
+  auto *genericSig = GenericConformance->getGenericSignature();
 
   auto substitutionMap =
-      genericEnv->getSubstitutionMap(GenericSubstitutions);
+      genericSig->getSubstitutionMap(GenericSubstitutions);
+
+  // Local function to determine whether we will end up
+  auto normal = GenericConformance->getRootNormalConformance();
+  auto isTentativeWitness = [&] {
+    if (normal->getState() != ProtocolConformanceState::CheckingTypeWitnesses)
+      return false;
+
+    return !normal->hasTypeWitness(assocType, nullptr);
+  };
 
   auto genericWitnessAndDecl
-    = GenericConformance->getTypeWitnessAndDecl(assocType, resolver);
+    = GenericConformance->getTypeWitnessAndDecl(assocType, resolver, options);
 
-  auto &genericWitness = genericWitnessAndDecl.first;
+  auto genericWitness = genericWitnessAndDecl.first;
+  if (!genericWitness)
+    return { Type(), nullptr };
+
   auto *typeDecl = genericWitnessAndDecl.second;
 
   // Apply the substitution we computed above
   auto specializedType
-    = genericWitness.subst(substitutionMap);
-  if (!specializedType)
-    specializedType = ErrorType::get(genericWitness);
+    = genericWitness.subst(substitutionMap, options);
+  if (!specializedType) {
+    if (isTentativeWitness())
+      return { Type(), nullptr };
 
-  // If the type witness was unchanged, just copy it directly.
-  if (specializedType.getPointer() == genericWitness.getPointer()) {
-    TypeWitnesses[assocType] = genericWitnessAndDecl;
-    return TypeWitnesses[assocType];
+    specializedType = ErrorType::get(genericWitness);
   }
 
-  TypeWitnesses[assocType] = std::make_pair(specializedType, typeDecl);
-  return TypeWitnesses[assocType];
+  // If we aren't in a case where we used the tentative type witness
+  // information, cache the result.
+  auto specializedWitnessAndDecl = std::make_pair(specializedType, typeDecl);
+  if (!isTentativeWitness() && !specializedType->hasError())
+    TypeWitnesses[assocType] = specializedWitnessAndDecl;
+
+  return specializedWitnessAndDecl;
 }
 
 ProtocolConformanceRef
@@ -730,8 +735,8 @@ SpecializedProtocolConformance::getAssociatedConformance(Type assocType,
   ProtocolConformanceRef conformance =
     GenericConformance->getAssociatedConformance(assocType, protocol, resolver);
 
-  auto genericEnv = GenericConformance->getGenericEnvironment();
-  auto subMap = genericEnv->getSubstitutionMap(GenericSubstitutions);
+  auto genericSig = GenericConformance->getGenericSignature();
+  auto subMap = genericSig->getSubstitutionMap(GenericSubstitutions);
 
   Type origType =
     (conformance.isConcrete()
@@ -811,30 +816,10 @@ ProtocolConformance::subst(Type substType,
                == substType->getNominalOrBoundGenericNominal()
              && "substitution mapped to different nominal?!");
 
-      // Since this is a normal conformance, the substitution maps archetypes
-      // in the environment of the conformance to types containing archetypes
-      // of some other generic environment.
-      //
-      // ASTContext::getSpecializedConformance() wants a substitution map
-      // with interface types as keys, so do the mapping here.
-      //
-      // Once the type of a normal conformance becomes an interface type,
-      // we can remove this.
       SubstitutionMap subMap;
-      if (auto *genericSig = getGenericSignature()) {
+      if (getGenericSignature()) {
         auto *genericEnv = getGenericEnvironment();
-        subMap = genericSig->getSubstitutionMap(
-          [&](SubstitutableType *t) -> Type {
-            return genericEnv->mapTypeIntoContext(
-              t).subst(subs, conformances, SubstFlags::UseErrorType);
-          },
-          [&](CanType origType, Type substType, ProtocolType *protoType)
-            -> Optional<ProtocolConformanceRef> {
-            origType = CanType(
-              genericEnv->mapTypeIntoContext(
-                origType)->castTo<ArchetypeType>());
-            return conformances(origType, substType, protoType);
-          });
+        subMap = genericEnv->getSubstitutionMap(subs, conformances);
       }
 
       return substType->getASTContext()
@@ -898,17 +883,14 @@ void NominalTypeDecl::prepareConformanceTable() const {
 
   // If this type declaration was not parsed from source code or introduced
   // via the Clang importer, don't add any synthesized conformances.
-  if (!getParentSourceFile() && !hasClangNode())
+  auto *file = cast<FileUnit>(getModuleScopeContext());
+  if (file->getKind() != FileUnitKind::Source &&
+      file->getKind() != FileUnitKind::ClangModule) {
     return;
+  }
 
   // Add any synthesized conformances.
-  if (isa<ClassDecl>(this)) {
-    // FIXME: This is going away soon.
-    if (auto anyObject = getASTContext().getProtocol(
-                           KnownProtocolKind::AnyObject)) {
-      ConformanceTable->addSynthesizedConformance(mutableThis, anyObject);
-    }
-  } else if (auto theEnum = dyn_cast<EnumDecl>(mutableThis)) {
+  if (auto theEnum = dyn_cast<EnumDecl>(mutableThis)) {
     if (theEnum->hasCases() && theEnum->hasOnlyCasesWithoutAssociatedValues()) {
       // Simple enumerations conform to Equatable.
       if (auto equatable = ctx.getProtocol(KnownProtocolKind::Equatable)) {

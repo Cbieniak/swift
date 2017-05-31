@@ -79,15 +79,17 @@ static void addMandatoryOptPipeline(SILPassPipelinePlan &P,
   }
   P.addDiagnoseStaticExclusivity();
   P.addCapturePromotion();
+
+  // Select access kind after capture promotion and before stack promotion.
+  // This guarantees that stack-promotable boxes have [static] enforcement.
+  P.addAccessEnforcementSelection();
+  P.addInactiveAccessMarkerElimination();
+
   P.addAllocBoxToStack();
   P.addNoReturnFolding();
   P.addOwnershipModelEliminator();
   P.addMarkUninitializedFixup();
   P.addDefiniteInitialization();
-
-  P.addAccessEnforcementSelection();
-  P.addAccessMarkerElimination();
-
   P.addMandatoryInlining();
   P.addPredictableMemoryOptimizations();
   P.addDiagnosticConstantPropagation();
@@ -428,18 +430,32 @@ SILPassPipelinePlan::getLoweringPassPipeline() {
   return P;
 }
 
-/// Non-mandatory passes that should run as preparation for IRGen.
-static void addIRGenPreparePipeline(SILPassPipelinePlan &P) {
+SILPassPipelinePlan
+SILPassPipelinePlan::getIRGenPreparePassPipeline(const SILOptions &Options) {
+  SILPassPipelinePlan P;
   P.startPipeline("IRGen Preparation");
   // Insert SIL passes to run during IRGen.
   // Hoist generic alloc_stack instructions to the entry block to enable better
   // llvm-ir generation for dynamic alloca instructions.
   P.addAllocStackHoisting();
+  if (Options.EnableLargeLoadableTypes) {
+    P.addLoadableByAddress();
+  }
+  return P;
 }
 
-SILPassPipelinePlan SILPassPipelinePlan::getIRGenPreparePassPipeline() {
+SILPassPipelinePlan
+SILPassPipelinePlan::getSILOptPreparePassPipeline(const SILOptions &Options) {
   SILPassPipelinePlan P;
-  addIRGenPreparePipeline(P);
+
+  if (Options.DebugSerialization) {
+    addPerfDebugSerializationPipeline(P);
+    return P;
+  }
+
+  P.startPipeline("SILOpt Prepare Passes");
+  P.addFullAccessMarkerElimination();
+
   return P;
 }
 

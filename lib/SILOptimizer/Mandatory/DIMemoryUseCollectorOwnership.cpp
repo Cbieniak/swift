@@ -276,7 +276,7 @@ DIMemoryObjectInfo::getPathStringToElement(unsigned Element,
     Result = "self";
   else if (ValueDecl *VD =
                dyn_cast_or_null<ValueDecl>(getLoc().getAsASTNode<Decl>()))
-    Result = VD->getName().str();
+    Result = VD->getBaseName().getIdentifier().str();
   else
     Result = "<unknown>";
 
@@ -853,6 +853,7 @@ void ElementUseCollector::collectUses(SILValue Pointer, unsigned BaseEltNo) {
 
       // If this is an in-parameter, it is like a load.
       case ParameterConvention::Indirect_In:
+      case ParameterConvention::Indirect_In_Constant:
       case ParameterConvention::Indirect_In_Guaranteed:
         addElementUses(BaseEltNo, PointeeType, User, DIUseKind::IndirectIn);
         continue;
@@ -1154,10 +1155,12 @@ static SILInstruction *isSuperInitUse(UpcastInst *Inst) {
     // (derived_to_base_expr implicit type='C'
     //   (declref_expr type='D' decl='self'))
     if (auto *DTB = dyn_cast<DerivedToBaseExpr>(LocExpr->getArg()))
-      if (auto *DRE = dyn_cast<DeclRefExpr>(DTB->getSubExpr()))
+      if (auto *DRE = dyn_cast<DeclRefExpr>(DTB->getSubExpr())) {
+          ASTContext &Ctx = DRE->getDecl()->getASTContext();
         if (DRE->getDecl()->isImplicit() &&
-            DRE->getDecl()->getName().str() == "self")
+            DRE->getDecl()->getBaseName() == Ctx.Id_self)
           return User;
+      }
   }
 
   return nullptr;

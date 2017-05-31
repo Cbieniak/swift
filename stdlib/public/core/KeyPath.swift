@@ -27,12 +27,15 @@ internal func _abstract(
 
 // MARK: Type-erased abstract base classes
 
+/// A type-erased key path, from any root type to any resulting value type.
 public class AnyKeyPath: Hashable, _AppendKeyPath {
+  /// The root type for this key path.
   @_inlineable
   public static var rootType: Any.Type {
     return _rootAndValueType.root
   }
 
+  /// The value type for this key path.
   @_inlineable
   public static var valueType: Any.Type {
     return _rootAndValueType.value
@@ -138,11 +141,14 @@ public class AnyKeyPath: Hashable, _AppendKeyPath {
   }
 }
 
+/// A partially type-erased key path, from a concrete root type to any
+/// resulting value type.
 public class PartialKeyPath<Root>: AnyKeyPath { }
 
 // MARK: Concrete implementations
 internal enum KeyPathKind { case readOnly, value, reference }
 
+/// A key path from a specific root type to a specific resulting value type.
 public class KeyPath<Root, Value>: PartialKeyPath<Root> {
   public typealias _Root = Root
   public typealias _Value = Value
@@ -192,9 +198,6 @@ public class KeyPath<Root, Value>: PartialKeyPath<Root> {
         let isLast = optNextType == nil
         
         func project<CurValue>(_ base: CurValue) -> Value? {
-          // FIXME: Opened archetype specialization fails to propagate uses
-          // in some cases. rdar://problem/31749245
-          @inline(never)
           func project2<NewValue>(_: NewValue.Type) -> Value? {
             let newBase: NewValue = rawComponent.projectReadOnly(base)
             if isLast {
@@ -222,6 +225,7 @@ public class KeyPath<Root, Value>: PartialKeyPath<Root> {
   }
 }
 
+/// A key path that supports reading from and writing to the resulting value.
 public class WritableKeyPath<Root, Value>: KeyPath<Root, Value> {
   // MARK: Implementation detail
   
@@ -246,9 +250,6 @@ public class WritableKeyPath<Root, Value>: KeyPath<Root, Value> {
         let nextType = optNextType ?? Value.self
         
         func project<CurValue>(_: CurValue.Type) {
-          // FIXME: Opened archetype specialization fails to propagate uses
-          // in some cases. rdar://problem/31749245
-          @inline(never)
           func project2<NewValue>(_: NewValue.Type) {
             p = rawComponent.projectMutableAddress(p,
                                            from: CurValue.self,
@@ -274,6 +275,8 @@ public class WritableKeyPath<Root, Value>: KeyPath<Root, Value> {
 
 }
 
+/// A key path that supports reading from and writing to the resulting value
+/// with reference semantics.
 public class ReferenceWritableKeyPath<Root, Value>: WritableKeyPath<Root, Value> {
   // MARK: Implementation detail
 
@@ -300,9 +303,6 @@ public class ReferenceWritableKeyPath<Root, Value>: WritableKeyPath<Root, Value>
         let nextType = optNextType.unsafelyUnwrapped
         
         func project<NewValue>(_: NewValue.Type) -> Any {
-          // FIXME: Opened archetype specialization fails to propagate uses
-          // in some cases. rdar://problem/31749245
-          @inline(never)
           func project2<CurValue>(_ base: CurValue) -> Any {
             return rawComponent.projectReadOnly(base) as NewValue
           }
@@ -313,9 +313,6 @@ public class ReferenceWritableKeyPath<Root, Value>: WritableKeyPath<Root, Value>
       
       // Start formal access to the mutable value, based on the final base
       // value.
-      // FIXME: Opened archetype specialization fails to propagate uses
-      // in some cases. rdar://problem/31749245
-      @inline(never)
       func formalMutation<MutationRoot>(_ base: MutationRoot)
           -> UnsafeMutablePointer<Value> {
         var base2 = base
@@ -326,9 +323,6 @@ public class ReferenceWritableKeyPath<Root, Value>: WritableKeyPath<Root, Value>
             let (rawComponent, optNextType) = buffer.next()
             let nextType = optNextType ?? Value.self
             func project<CurValue>(_: CurValue.Type) {
-              // FIXME: Opened archetype specialization fails to propagate uses
-              // in some cases. rdar://problem/31749245
-              @inline(never)
               func project2<NewValue>(_: NewValue.Type) {
                 p = rawComponent.projectMutableAddress(p,
                                              from: CurValue.self,
@@ -638,8 +632,18 @@ internal struct RawKeyPathComponent {
     static var computedHasArgumentsFlag: UInt32 {
       return _SwiftKeyPathComponentHeader_ComputedHasArgumentsFlag
     }
-    static var computedUnresolvedIDFlag: UInt32 {
-      return _SwiftKeyPathComponentHeader_ComputedUnresolvedIDFlag
+
+    static var computedIDResolutionMask: UInt32 {
+      return _SwiftKeyPathComponentHeader_ComputedIDResolutionMask
+    }
+    static var computedIDResolved: UInt32 {
+      return _SwiftKeyPathComponentHeader_ComputedIDResolved
+    }
+    static var computedIDUnresolvedFieldOffset: UInt32 {
+      return _SwiftKeyPathComponentHeader_ComputedIDUnresolvedFieldOffset
+    }
+    static var computedIDUnresolvedIndirectPointer: UInt32 {
+      return _SwiftKeyPathComponentHeader_ComputedIDUnresolvedIndirectPointer
     }
     
     var _value: UInt32
@@ -1128,6 +1132,39 @@ internal struct KeyPathBuffer {
 
 // MARK: Library intrinsics for projecting key paths.
 
+@_inlineable
+public // COMPILER_INTRINSIC
+func _projectKeyPathPartial<Root>(
+  root: Root,
+  keyPath: PartialKeyPath<Root>
+) -> Any {
+  func open<Value>(_: Value.Type) -> Any {
+    return _projectKeyPathReadOnly(root: root,
+      keyPath: unsafeDowncast(keyPath, to: KeyPath<Root, Value>.self))
+  }
+  return _openExistential(type(of: keyPath).valueType, do: open)
+}
+
+@_inlineable
+public // COMPILER_INTRINSIC
+func _projectKeyPathAny<RootValue>(
+  root: RootValue,
+  keyPath: AnyKeyPath
+) -> Any? {
+  let (keyPathRoot, keyPathValue) = type(of: keyPath)._rootAndValueType
+  func openRoot<KeyPathRoot>(_: KeyPathRoot.Type) -> Any? {
+    guard let rootForKeyPath = root as? KeyPathRoot else {
+      return nil
+    }
+    func openValue<Value>(_: Value.Type) -> Any {
+      return _projectKeyPathReadOnly(root: rootForKeyPath,
+        keyPath: unsafeDowncast(keyPath, to: KeyPath<KeyPathRoot, Value>.self))
+    }
+    return _openExistential(keyPathValue, do: openValue)
+  }
+  return _openExistential(keyPathRoot, do: openRoot)
+}
+
 public // COMPILER_INTRINSIC
 func _projectKeyPathReadOnly<Root, Value>(
   root: Root,
@@ -1255,9 +1292,6 @@ public func _tryToAppendKeyPaths<Result: AnyKeyPath>(
   
   func open<Root>(_: Root.Type) -> Result {
     func open2<Value>(_: Value.Type) -> Result {
-      // FIXME: Opened archetype specialization fails to propagate uses
-      // in some cases. rdar://problem/31749245
-      @inline(never)
       func open3<AppendedValue>(_: AppendedValue.Type) -> Result {
         let typedRoot = unsafeDowncast(root, to: KeyPath<Root, Value>.self)
         let typedLeaf = unsafeDowncast(leaf,
@@ -1432,7 +1466,8 @@ public func _appendingKeyPaths<
 }
 
 // The distance in bytes from the address point of a KeyPath object to its
-// buffer header. Includes the size of the Swift heap object header and
+// buffer header. Includes the size of the Swift heap object header and the
+// pointer to the KVC string.
 
 internal var keyPathObjectHeaderSize: Int {
   return MemoryLayout<HeapObject>.size + MemoryLayout<Int>.size
@@ -1440,8 +1475,8 @@ internal var keyPathObjectHeaderSize: Int {
 
 // Runtime entry point to instantiate a key path object.
 @_cdecl("swift_getKeyPath")
-public func swift_getKeyPath(pattern: UnsafeMutableRawPointer,
-                             arguments: UnsafeRawPointer)
+public func _swift_getKeyPath(pattern: UnsafeMutableRawPointer,
+                              arguments: UnsafeRawPointer)
     -> UnsafeRawPointer {
   // The key path pattern is laid out like a key path object, with a few
   // modifications:
@@ -1455,7 +1490,7 @@ public func swift_getKeyPath(pattern: UnsafeMutableRawPointer,
   //   global object will itself always have the "trivial" bit set, since it
   //   never needs to be destroyed.)
   // - Components may have unresolved forms that require instantiation.
-  // - The component type metadata pointers are unresolved, and instead
+  // - Type metadata pointers are unresolved, and instead
   //   point to accessor functions that instantiate the metadata.
   //
   // The pattern never precomputes the capabilities of the key path (readonly/
@@ -1642,9 +1677,6 @@ internal func _getKeyPathClassAndInstanceSize(
 
   // Grab the class object for the key path type we'll end up with.
   func openRoot<Root>(_: Root.Type) -> AnyKeyPath.Type {
-    // FIXME: Opened archetype specialization fails to propagate uses
-    // in some cases. rdar://problem/31749245
-    @inline(never)
     func openLeaf<Leaf>(_: Leaf.Type) -> AnyKeyPath.Type {
       switch capability {
       case .readOnly:
@@ -1670,7 +1702,7 @@ internal func _instantiateKeyPathBuffer(
 ) {
   // NB: patternBuffer and destData alias when the pattern is instantiable
   // in-line. Therefore, do not read from patternBuffer after the same position
-  // in destBuffer has been written to.
+  // in destData has been written to.
 
   var patternBuffer = origPatternBuffer
   let destHeaderPtr = origDestData.baseAddress.unsafelyUnwrapped
@@ -1753,16 +1785,29 @@ internal func _instantiateKeyPathBuffer(
       // property.
       var newHeader = header
       var id = patternBuffer.pop(Int.self)
-      if header.payload
-          & RawKeyPathComponent.Header.computedUnresolvedIDFlag != 0 {
+      switch header.payload
+                         & RawKeyPathComponent.Header.computedIDResolutionMask {
+      case RawKeyPathComponent.Header.computedIDResolved:
+        // Nothing to do.
+        break
+      case RawKeyPathComponent.Header.computedIDUnresolvedFieldOffset:
+        // The value in the pattern is an offset into the type metadata that
+        // points to the field offset for the stored property identifying the
+        // component.
         _sanityCheck(header.payload
             & RawKeyPathComponent.Header.computedIDByStoredPropertyFlag != 0,
-          "only stored property IDs should need resolution")
-        newHeader.payload &=
-          ~RawKeyPathComponent.Header.computedUnresolvedIDFlag
+          "only stored property IDs should need offset resolution")
         let metadataPtr = unsafeBitCast(base, to: UnsafeRawPointer.self)
         id = metadataPtr.load(fromByteOffset: id, as: Int.self)
+      case RawKeyPathComponent.Header.computedIDUnresolvedIndirectPointer:
+        // The value in the pattern is a pointer to the actual unique word-sized
+        // value in memory.
+        let idPtr = UnsafeRawPointer(bitPattern: id).unsafelyUnwrapped
+        id = idPtr.load(as: Int.self)
+      default:
+        _sanityCheckFailure("unpossible")
       }
+      newHeader.payload &= ~RawKeyPathComponent.Header.computedIDResolutionMask
       pushDest(newHeader)
       pushDest(id)
       // Carry over the accessors.

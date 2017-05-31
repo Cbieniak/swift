@@ -781,12 +781,14 @@ void ide::collectModuleNames(StringRef SDKPath,
   }
 }
 
-DeclNameViewer::DeclNameViewer(StringRef Text) {
+
+DeclNameViewer::DeclNameViewer(StringRef Text): HasParen(false) {
   auto ArgStart = Text.find_first_of('(');
   if (ArgStart == StringRef::npos) {
     BaseName = Text;
     return;
   }
+  HasParen = true;
   BaseName = Text.substr(0, ArgStart);
   auto ArgEnd = Text.find_last_of(')');
   assert(ArgEnd != StringRef::npos);
@@ -796,6 +798,10 @@ DeclNameViewer::DeclNameViewer(StringRef Text) {
     return;
   assert(Labels.back().empty());
   Labels.pop_back();
+  std::transform(Labels.begin(), Labels.end(), Labels.begin(),
+      [](StringRef Label) {
+    return Label == "_" ? StringRef() : Label;
+  });
 }
 
 unsigned DeclNameViewer::commonPartsCount(DeclNameViewer &Other) const {

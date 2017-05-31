@@ -1,4 +1,4 @@
-// RUN: %target-typecheck-verify-swift -enable-experimental-subclass-existentials
+// RUN: %target-typecheck-verify-swift
 
 protocol P1 {
   typealias DependentInConcreteConformance = Self
@@ -51,10 +51,10 @@ struct Unrelated {}
 // FIXME: Not implemented yet.
 //
 
-func alreadyConforms<T>(_: Base<T>) {}
-func alreadyConforms<T>(_: Base<T> & P1) {}
-func alreadyConforms<T>(_: Base<T> & AnyObject) {}
-func alreadyConforms<T>(_: Base<T> & P1 & AnyObject) {}
+func alreadyConforms<T>(_: Base<T>) {} // expected-note {{'alreadyConforms' previously declared here}}
+func alreadyConforms<T>(_: Base<T> & P1) {} // expected-note {{'alreadyConforms' previously declared here}}
+func alreadyConforms<T>(_: Base<T> & AnyObject) {} // expected-error {{invalid redeclaration of 'alreadyConforms'}}
+func alreadyConforms<T>(_: Base<T> & P1 & AnyObject) {} // expected-error {{invalid redeclaration of 'alreadyConforms'}}
 
 func alreadyConforms(_: P3) {}
 func alreadyConforms(_: P3 & AnyObject) {}
@@ -70,6 +70,16 @@ func basicDiagnostics(
 
   // Valid typealias case
   _: OtherAndP2 & P3) {}
+
+// A composition containing only a single class is actually identical to
+// the class type itself.
+struct Box<T : Base<Int>> {}
+
+func takesBox(_: Box<Base<Int>>) {}
+
+func passesBox(_ b: Box<Base<Int> & Base<Int>>) {
+  takesBox(b)
+}
 
 // Test that subtyping behaves as you would expect.
 func basicSubtyping(
@@ -325,9 +335,25 @@ func metatypeSubtyping(
   let _: Derived.Type = derivedAndAnyObject
   let _: BaseAndP2<Int>.Type = baseIntAndP2AndAnyObject
 
+  let _ = baseIntAndP2 as Base<Int>.Type
+  let _ = baseIntAndP2AndAnyObject as Base<Int>.Type
+  let _ = derivedAndAnyObject as Derived.Type
+  let _ = baseIntAndP2AndAnyObject as BaseAndP2<Int>.Type
+
+  let _ = baseIntAndP2 as? Base<Int>.Type // expected-warning {{always succeeds}}
+  let _ = baseIntAndP2AndAnyObject as? Base<Int>.Type // expected-warning {{always succeeds}}
+  let _ = derivedAndAnyObject as? Derived.Type // expected-warning {{always succeeds}}
+  let _ = baseIntAndP2AndAnyObject as? BaseAndP2<Int>.Type // expected-warning {{always succeeds}}
+
   // Upcast
   let _: BaseAndP2<Int>.Type = derived
   let _: BaseAndP2<Int>.Type = derivedAndAnyObject
+
+  let _ = derived as BaseAndP2<Int>.Type
+  let _ = derivedAndAnyObject as BaseAndP2<Int>.Type
+
+  let _ = derived as? BaseAndP2<Int>.Type // expected-warning {{always succeeds}}
+  let _ = derivedAndAnyObject as? BaseAndP2<Int>.Type // expected-warning {{always succeeds}}
 
   // Erasing superclass constraint
   let _: P2.Type = baseIntAndP2
@@ -335,6 +361,18 @@ func metatypeSubtyping(
   let _: P2.Type = derivedAndAnyObject
   let _: (P2 & AnyObject).Type = derived
   let _: (P2 & AnyObject).Type = derivedAndAnyObject
+
+  let _ = baseIntAndP2 as P2.Type
+  let _ = derived as P2.Type
+  let _ = derivedAndAnyObject as P2.Type
+  let _ = derived as (P2 & AnyObject).Type
+  let _ = derivedAndAnyObject as (P2 & AnyObject).Type
+
+  let _ = baseIntAndP2 as? P2.Type // expected-warning {{always succeeds}}
+  let _ = derived as? P2.Type // expected-warning {{always succeeds}}
+  let _ = derivedAndAnyObject as? P2.Type // expected-warning {{always succeeds}}
+  let _ = derived as? (P2 & AnyObject).Type // expected-warning {{always succeeds}}
+  let _ = derivedAndAnyObject as? (P2 & AnyObject).Type // expected-warning {{always succeeds}}
 
   // Initializers
   let _: Base<Int> & P2 = baseIntAndP2.init(classInit: ())
@@ -412,7 +450,7 @@ func conformsTo<T1 : P2, T2 : Base<Int> & P2>(
 protocol ProtoConstraintsSelfToClass where Self : Base<Int> {}
 
 protocol ProtoRefinesClass : Base<Int> {} // FIXME expected-error {{}}
-protocol ProtoRefinesClassAndProtocolAlias : BaseIntAndP2 {} // FIXME expected-error {{}}
+protocol ProtoRefinesClassAndProtocolAlias : BaseIntAndP2 {}
 protocol ProtoRefinesClassAndProtocolDirect : Base<Int> & P2 {} // FIXME expected-error 2 {{}}
 protocol ProtoRefinesClassAndProtocolExpanded : Base<Int>, P2 {} // FIXME expected-error {{}}
 
@@ -421,11 +459,13 @@ class ClassConformsToClassProtocolBad1 : ProtoConstraintsSelfToClass {}
 // expected-note@-2 {{requirement specified as 'Self' : 'Base<Int>' [with Self = ClassConformsToClassProtocolBad1]}}
 class ClassConformsToClassProtocolGood1 : Derived, ProtoConstraintsSelfToClass {}
 
-class ClassConformsToClassProtocolBad2 : ProtoRefinesClass {} // FIXME
+class ClassConformsToClassProtocolBad2 : ProtoRefinesClass {}
+// expected-error@-1 {{'ProtoRefinesClass' requires that 'ClassConformsToClassProtocolBad2' inherit from 'Base<Int>'}}
+// expected-note@-2 {{requirement specified as 'Self' : 'Base<Int>' [with Self = ClassConformsToClassProtocolBad2]}}
 class ClassConformsToClassProtocolGood2 : Derived, ProtoRefinesClass {}
 
 // Subclass existentials inside inheritance clauses
-class CompositionInClassInheritanceClauseAlias : BaseIntAndP2 {
+class CompositionInClassInheritanceClauseAlias : BaseIntAndP2 { // FIXME: expected-error {{}}
   required init(classInit: ()) {
     super.init(classInit: ()) // FIXME: expected-error {{}}
   }
@@ -456,5 +496,45 @@ class CompositionInClassInheritanceClauseDirect : Base<Int> & P2 {
 
 protocol CompositionInAssociatedTypeInheritanceClause {
   associatedtype A : BaseIntAndP2
-  // FIXME expected-error@-1 {{}}
+}
+
+// Members of metatypes and existential metatypes
+
+protocol ProtocolWithStaticMember {
+  static func staticProtocolMember()
+  func instanceProtocolMember()
+}
+
+class ClassWithStaticMember {
+  static func staticClassMember() {}
+  func instanceClassMember() {}
+}
+
+func staticMembers(
+    m1: (ProtocolWithStaticMember & ClassWithStaticMember).Protocol,
+    m2: (ProtocolWithStaticMember & ClassWithStaticMember).Type) {
+  _ = m1.staticProtocolMember() // expected-error {{static member 'staticProtocolMember' cannot be used on protocol metatype '(ClassWithStaticMember & ProtocolWithStaticMember).Protocol'}}
+  _ = m1.staticProtocolMember // expected-error {{static member 'staticProtocolMember' cannot be used on protocol metatype '(ClassWithStaticMember & ProtocolWithStaticMember).Protocol'}}
+
+  _ = m1.staticClassMember() // expected-error {{static member 'staticClassMember' cannot be used on protocol metatype '(ClassWithStaticMember & ProtocolWithStaticMember).Protocol'}}
+  _ = m1.staticClassMember // expected-error {{static member 'staticClassMember' cannot be used on protocol metatype '(ClassWithStaticMember & ProtocolWithStaticMember).Protocol'}}
+
+  _ = m1.instanceProtocolMember
+  _ = m1.instanceClassMember
+
+  _ = m2.staticProtocolMember()
+  _ = m2.staticProtocolMember
+
+  _ = m2.staticClassMember()
+  _ = m2.staticClassMember
+
+  _ = m2.instanceProtocolMember // expected-error {{instance member 'instanceProtocolMember' cannot be used on type 'ClassWithStaticMember & ProtocolWithStaticMember'}}
+  _ = m2.instanceClassMember // expected-error {{instance member 'instanceClassMember' cannot be used on type 'ClassWithStaticMember & ProtocolWithStaticMember'}}
+}
+
+// Make sure we correctly form subclass existentials in expression context.
+func takesBaseIntAndPArray(_: [Base<Int> & P2]) {}
+
+func passesBaseIntAndPArray() {
+  takesBaseIntAndPArray([Base<Int> & P2]())
 }

@@ -153,8 +153,7 @@ public:
     if (InsertPt == BB->end())
       return;
     // Set the opened archetype context from the instruction.
-    this->getOpenedArchetypes().addOpenedArchetypeOperands(
-        InsertPt->getTypeDependentOperands());
+    addOpenedArchetypeOperands(&*InsertPt);
   }
 
   /// setInsertionPoint - Set the insertion point to insert before the specified
@@ -200,10 +199,7 @@ public:
   //===--------------------------------------------------------------------===//
   // Opened archetypes handling
   //===--------------------------------------------------------------------===//
-  void addOpenedArchetypeOperands(SILInstruction *I) {
-    getOpenedArchetypes().addOpenedArchetypeOperands(
-        I->getTypeDependentOperands());
-  }
+  void addOpenedArchetypeOperands(SILInstruction *I);
 
   //===--------------------------------------------------------------------===//
   // Type remapping
@@ -320,11 +316,14 @@ public:
         &F, OpenedArchetypes));
   }
 
-  ApplyInst *createApply(SILLocation Loc, SILValue Fn, SILType SubstFnTy,
-                         SILType Result, SubstitutionList Subs,
-                         ArrayRef<SILValue> Args, bool isNonThrowing) {
-    return insert(ApplyInst::create(getSILDebugLocation(Loc), Fn, SubstFnTy,
-                                    Result, Subs, Args, isNonThrowing, F,
+  ApplyInst *
+  createApply(SILLocation Loc, SILValue Fn, SubstitutionList Subs,
+              ArrayRef<SILValue> Args, bool isNonThrowing,
+              Optional<SILModuleConventions> ModuleConventions = None) {
+    return insert(ApplyInst::create(getSILDebugLocation(Loc), Fn,
+                                    Subs, Args, isNonThrowing,
+                                    ModuleConventions,
+                                    F,
                                     OpenedArchetypes));
   }
 
@@ -332,27 +331,25 @@ public:
                          bool isNonThrowing) {
     SILFunctionConventions conventions(Fn->getType().castTo<SILFunctionType>(),
                                        getModule());
-    return createApply(Loc, Fn, Fn->getType(), conventions.getSILResultType(),
-                       SubstitutionList(), Args, isNonThrowing);
+    return createApply(Loc, Fn, SubstitutionList(), Args, isNonThrowing);
   }
 
-  TryApplyInst *createTryApply(SILLocation Loc, SILValue fn, SILType substFnTy,
-                               SubstitutionList subs,
-                               ArrayRef<SILValue> args, SILBasicBlock *normalBB,
+  TryApplyInst *createTryApply(SILLocation Loc, SILValue fn,
+                               SubstitutionList subs, ArrayRef<SILValue> args,
+                               SILBasicBlock *normalBB,
                                SILBasicBlock *errorBB) {
     return insertTerminator(TryApplyInst::create(getSILDebugLocation(Loc),
-                                                 fn, substFnTy, subs, args,
+                                                 fn, subs, args,
                                                  normalBB, errorBB, F,
                                                  OpenedArchetypes));
   }
 
   PartialApplyInst *createPartialApply(SILLocation Loc, SILValue Fn,
-                                       SILType SubstFnTy,
                                        SubstitutionList Subs,
                                        ArrayRef<SILValue> Args,
-                                       SILType ClosureTy) {
+                                       ParameterConvention CalleeConvention) {
     return insert(PartialApplyInst::create(getSILDebugLocation(Loc), Fn,
-                                           SubstFnTy, Subs, Args, ClosureTy, F,
+                                           Args, Subs, CalleeConvention, F,
                                            OpenedArchetypes));
   }
 
@@ -681,8 +678,8 @@ public:
 
   ConvertFunctionInst *createConvertFunction(SILLocation Loc, SILValue Op,
                                              SILType Ty) {
-    return insert(new (F.getModule())
-                      ConvertFunctionInst(getSILDebugLocation(Loc), Op, Ty));
+    return insert(ConvertFunctionInst::create(getSILDebugLocation(Loc), Op, Ty,
+                                              F, OpenedArchetypes));
   }
 
   ThinFunctionToPointerInst *
@@ -693,13 +690,13 @@ public:
 
   PointerToThinFunctionInst *
   createPointerToThinFunction(SILLocation Loc, SILValue Op, SILType Ty) {
-    return insert(new (F.getModule()) PointerToThinFunctionInst(
-        getSILDebugLocation(Loc), Op, Ty));
+    return insert(PointerToThinFunctionInst::create(
+        getSILDebugLocation(Loc), Op, Ty, F, OpenedArchetypes));
   }
 
   UpcastInst *createUpcast(SILLocation Loc, SILValue Op, SILType Ty) {
-    return insert(new (F.getModule())
-                      UpcastInst(getSILDebugLocation(Loc), Op, Ty));
+    return insert(UpcastInst::create(getSILDebugLocation(Loc), Op, Ty, F,
+                                     OpenedArchetypes));
   }
 
   AddressToPointerInst *createAddressToPointer(SILLocation Loc, SILValue Op,
@@ -786,8 +783,8 @@ public:
 
   ThinToThickFunctionInst *createThinToThickFunction(SILLocation Loc,
                                                      SILValue Op, SILType Ty) {
-    return insert(new (F.getModule()) ThinToThickFunctionInst(
-        getSILDebugLocation(Loc), Op, Ty));
+    return insert(ThinToThickFunctionInst::create(getSILDebugLocation(Loc), Op,
+                                                  Ty, F, OpenedArchetypes));
   }
 
   ThickToObjCMetatypeInst *createThickToObjCMetatype(SILLocation Loc,
@@ -868,11 +865,26 @@ public:
                                                       operand, atomicity));
   }
 
+  RetainValueAddrInst *createRetainValueAddr(SILLocation Loc, SILValue operand,
+                                             Atomicity atomicity) {
+    assert(isParsing || F.hasUnqualifiedOwnership());
+    return insert(new (F.getModule()) RetainValueAddrInst(
+        getSILDebugLocation(Loc), operand, atomicity));
+  }
+
   ReleaseValueInst *createReleaseValue(SILLocation Loc, SILValue operand,
                                        Atomicity atomicity) {
     assert(isParsing || F.hasUnqualifiedOwnership());
     return insert(new (F.getModule()) ReleaseValueInst(getSILDebugLocation(Loc),
                                                        operand, atomicity));
+  }
+
+  ReleaseValueAddrInst *createReleaseValueAddr(SILLocation Loc,
+                                               SILValue operand,
+                                               Atomicity atomicity) {
+    assert(isParsing || F.hasUnqualifiedOwnership());
+    return insert(new (F.getModule()) ReleaseValueAddrInst(
+        getSILDebugLocation(Loc), operand, atomicity));
   }
 
   UnmanagedRetainValueInst *createUnmanagedRetainValue(SILLocation Loc,

@@ -148,7 +148,6 @@ ABSTRACT_EXPR(ImplicitConversion, Expr)
   EXPR(ArrayToPointer, ImplicitConversionExpr)
   EXPR(StringToPointer, ImplicitConversionExpr)
   EXPR(PointerToPointer, ImplicitConversionExpr)
-  EXPR(LValueToPointer, ImplicitConversionExpr)
   EXPR(ForeignObjectConversion, ImplicitConversionExpr)
   EXPR(UnevaluatedInstance, ImplicitConversionExpr)
   EXPR_RANGE(ImplicitConversion, Load, UnevaluatedInstance)
@@ -169,6 +168,7 @@ UNCHECKED_EXPR(UnresolvedPattern, Expr)
 EXPR(EditorPlaceholder, Expr)
 EXPR(ObjCSelector, Expr)
 EXPR(KeyPath, Expr)
+UNCHECKED_EXPR(KeyPathDot, Expr)
 
 #undef EXPR_RANGE
 #undef LITERAL_EXPR

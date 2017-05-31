@@ -20,6 +20,7 @@
 #include "swift/AST/DiagnosticConsumer.h"
 #include "swift/Migrator/FixitFilter.h"
 #include "clang/Rewrite/Core/RewriteBuffer.h"
+#include "llvm/ADT/DenseSet.h"
 
 namespace swift {
 
@@ -34,10 +35,6 @@ class FixitApplyDiagnosticConsumer final
   : public DiagnosticConsumer, public FixitFilter {
   clang::RewriteBuffer RewriteBuf;
 
-  /// The Migrator options collected by the Swift CompilerInvocation,
-  /// used to drive decisions about which fix-its to apply.
-  const MigratorOptions &MigratorOpts;
-
   /// The entire text of the input file.
   const StringRef Text;
 
@@ -49,9 +46,11 @@ class FixitApplyDiagnosticConsumer final
   /// determine whether to call `printResult`.
   unsigned NumFixitsApplied;
 
+  /// Tracks whether a SourceLoc already got an `@objc` insertion.
+  llvm::SmallPtrSet<const void *, 32> AddedObjC;
+
 public:
-  FixitApplyDiagnosticConsumer(const MigratorOptions &MigratorOpts,
-                               const StringRef Text,
+  FixitApplyDiagnosticConsumer(const StringRef Text,
                                const StringRef BufferName);
 
   /// Print the resulting text, applying the caught fix-its to the given

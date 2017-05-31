@@ -1,4 +1,4 @@
-//===--- KeyPath.h - ABI constants for key path objects ----------*- C++ *-===//
+//===--- KeyPath.h - ABI constants for key path objects ---------*- C++ -*-===//
 //
 // This source file is part of the Swift.org open source project
 //
@@ -20,7 +20,8 @@
 #include "SwiftStdint.h"
 
 #ifdef __cplusplus
-namespace swift { extern "C" {
+namespace swift {
+extern "C" {
 #endif
 
 // Bitfields for the key path buffer header.
@@ -82,12 +83,19 @@ static const __swift_uint32_t _SwiftKeyPathComponentHeader_ComputedIDByVTableOff
   = 0x02000000U;
 static const __swift_uint32_t _SwiftKeyPathComponentHeader_ComputedHasArgumentsFlag
   = 0x01000000U;
-static const __swift_uint32_t _SwiftKeyPathComponentHeader_ComputedUnresolvedIDFlag
+static const __swift_uint32_t _SwiftKeyPathComponentHeader_ComputedIDResolutionMask
+  = 0x0000000FU;
+static const __swift_uint32_t _SwiftKeyPathComponentHeader_ComputedIDResolved
+  = 0x00000000U;
+static const __swift_uint32_t _SwiftKeyPathComponentHeader_ComputedIDUnresolvedFieldOffset
   = 0x00000001U;
+static const __swift_uint32_t _SwiftKeyPathComponentHeader_ComputedIDUnresolvedIndirectPointer
+  = 0x00000002U;
 
 
 #ifdef __cplusplus
-}} // namespace swift } extern "C" }
+} // extern "C"
+} // namespace swift
 #endif
 
 #endif // __SWIFT_SHIMS_KEYPATH_H__

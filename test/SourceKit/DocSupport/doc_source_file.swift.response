@@ -2353,15 +2353,7 @@
         key.usr: "s:8__main__3CC2C9subscriptS2icfg",
         key.offset: 1162,
         key.length: 25,
-        key.fully_annotated_decl: "<decl.function.accessor.getter><decl.name>get</decl.name> {}</decl.function.accessor.getter>",
-        key.entities: [
-          {
-            key.kind: source.lang.swift.decl.var.local,
-            key.name: "i",
-            key.offset: 1144,
-            key.length: 3
-          }
-        ]
+        key.fully_annotated_decl: "<decl.function.accessor.getter><decl.name>get</decl.name> {}</decl.function.accessor.getter>"
       },
       {
         key.kind: source.lang.swift.decl.function.accessor.setter,
@@ -2374,12 +2366,6 @@
             key.kind: source.lang.swift.decl.var.local,
             key.name: "vvv",
             key.offset: 1152,
-            key.length: 3
-          },
-          {
-            key.kind: source.lang.swift.decl.var.local,
-            key.name: "i",
-            key.offset: 1144,
             key.length: 3
           }
         ]
@@ -2598,7 +2584,7 @@
         key.usr: "s:8__main__2S1V7Elementa",
         key.offset: 1835,
         key.length: 20,
-        key.fully_annotated_decl: "<decl.typealias><syntaxtype.keyword>typealias</syntaxtype.keyword> <decl.name>Element</decl.name> = <ref.struct usr=\"s:Si\">Int</ref.struct></decl.typealias>",
+        key.fully_annotated_decl: "<decl.typealias><syntaxtype.keyword>typealias</syntaxtype.keyword> <ref.struct usr=\"s:8__main__2S1V\">S1</ref.struct>.<decl.name>Element</decl.name> = <ref.struct usr=\"s:Si\">Int</ref.struct></decl.typealias>",
         key.conforms: [
           {
             key.kind: source.lang.swift.ref.protocol,

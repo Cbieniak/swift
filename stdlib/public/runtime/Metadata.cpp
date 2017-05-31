@@ -1532,7 +1532,7 @@ static void _swift_initGenericClassObjCName(ClassMetadata *theClass) {
   auto globalNode = Dem.createNode(Demangle::Node::Kind::Global);
   globalNode->addChild(typeNode, Dem);
 
-  auto string = Demangle::mangleNode(globalNode);
+  auto string = Demangle::mangleNodeOld(globalNode);
 
   auto fullNameBuf = (char*)swift_slowAlloc(string.size() + 1, 0);
   memcpy(fullNameBuf, string.c_str(), string.size() + 1);
@@ -2085,10 +2085,16 @@ public:
   }
 
   static size_t getExtraAllocationSize(Key key) {
-    return sizeof(const ProtocolDescriptor *) * key.NumProtocols;
+    return (sizeof(const ProtocolDescriptor *) * key.NumProtocols +
+            (key.SuperclassConstraint != nullptr
+             ? sizeof(const Metadata *)
+             : 0));
   }
   size_t getExtraAllocationSize() const {
-    return sizeof(const ProtocolDescriptor *) * Data.Protocols.NumProtocols;
+    return (sizeof(const ProtocolDescriptor *) * Data.Protocols.NumProtocols +
+            (Data.Flags.hasSuperclassConstraint()
+             ? sizeof(const Metadata *)
+             : 0));
   }
 };
 
@@ -2276,7 +2282,6 @@ getExistentialValueWitnesses(ProtocolClassConstraint classConstraint,
 #endif
       
   // Other existentials use standard representation.
-  case SpecialProtocol::AnyObject:
   case SpecialProtocol::None:
     break;
   }
@@ -2299,7 +2304,6 @@ ExistentialTypeMetadata::getRepresentation() const {
   switch (Flags.getSpecialProtocol()) {
   case SpecialProtocol::Error:
     return ExistentialTypeRepresentation::Error;
-  case SpecialProtocol::AnyObject:
   case SpecialProtocol::None:
     break;
   }
@@ -2497,8 +2501,9 @@ swift::swift_getExistentialTypeMetadata(ProtocolClassConstraint classConstraint,
                                         const ProtocolDescriptor **protocols)
     SWIFT_CC(RegisterPreservingCC_IMPL) {
 
-  // Sort the protocol set.
-  std::sort(protocols, protocols + numProtocols);
+  // We entrust that the compiler emitting the call to
+  // swift_getExistentialTypeMetadata always sorts the `protocols` array using
+  // a globally stable ordering that's consistent across modules.
 
   ExistentialCacheEntry::Key key = {
     superclassConstraint, classConstraint, numProtocols, protocols
@@ -2515,24 +2520,6 @@ ExistentialCacheEntry::ExistentialCacheEntry(Key key) {
       ++numWitnessTables;
   }
 
-#ifndef NDEBUG
-  // Verify the class constraint.
-  {
-    auto classConstraint = ProtocolClassConstraint::Any;
-
-    if (key.SuperclassConstraint)
-      classConstraint = ProtocolClassConstraint::Class;
-    else {
-      for (auto p : make_range(key.Protocols, key.Protocols + key.NumProtocols)) {
-        if (p->Flags.getClassConstraint() == ProtocolClassConstraint::Class)
-          classConstraint = ProtocolClassConstraint::Class;
-      }
-    }
-    
-    assert(classConstraint == key.ClassConstraint);
-  }
-#endif
-
   // Get the special protocol kind for an uncomposed protocol existential.
   // Protocol compositions are currently never special.
   auto special = SpecialProtocol::None;
@@ -2548,9 +2535,18 @@ ExistentialCacheEntry::ExistentialCacheEntry(Key key) {
     .withNumWitnessTables(numWitnessTables)
     .withClassConstraint(key.ClassConstraint)
     .withSpecialProtocol(special);
-  // FIXME
-  //Data.Superclass = key.superclassConstraint;
-  assert(!key.SuperclassConstraint);
+
+  if (key.SuperclassConstraint != nullptr) {
+    Data.Flags = Data.Flags.withHasSuperclass(true);
+
+    // Get a pointer to tail-allocated storage for this metadata record.
+    auto Pointer = reinterpret_cast<
+      const Metadata **>(&Data + 1);
+
+    // The superclass immediately follows the list of protocol descriptors.
+    Pointer[key.NumProtocols] = key.SuperclassConstraint;
+  }
+
   Data.Protocols.NumProtocols = key.NumProtocols;
   for (size_t i = 0; i < key.NumProtocols; ++i)
     Data.Protocols[i] = key.Protocols[i];

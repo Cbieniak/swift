@@ -436,7 +436,6 @@ namespace {
     RValue visitRebindSelfInConstructorExpr(RebindSelfInConstructorExpr *E,
                                             SGFContext C);
     RValue visitInjectIntoOptionalExpr(InjectIntoOptionalExpr *E, SGFContext C);
-    RValue visitLValueToPointerExpr(LValueToPointerExpr *E, SGFContext C);
     RValue visitClassMetatypeToObjectExpr(ClassMetatypeToObjectExpr *E,
                                           SGFContext C);
     RValue visitExistentialMetatypeToObjectExpr(ExistentialMetatypeToObjectExpr *E,
@@ -768,18 +767,9 @@ emitRValueForDecl(SILLocation loc, ConcreteDeclRef declRef, Type ncRefType,
   
   // If the referenced decl isn't a VarDecl, it should be a constant of some
   // sort.
-
-  // If the referenced decl is a local func with context, then the SILDeclRef
-  // uncurry level is one deeper (for the context vars).
-  bool hasLocalCaptures = false;
-  unsigned uncurryLevel = 0;
-  if (auto *fd = dyn_cast<FuncDecl>(decl)) {
-    hasLocalCaptures = SGM.M.Types.hasLoweredLocalCaptures(fd);
-    if (hasLocalCaptures)
-      ++uncurryLevel;
-  }
-
-  auto silDeclRef = SILDeclRef(decl, ResilienceExpansion::Minimal, uncurryLevel);
+  SILDeclRef silDeclRef(decl);
+  if (silDeclRef.getUncurryLevel() > 0)
+    silDeclRef = silDeclRef.asCurried();
 
   ManagedValue result = emitClosureValue(loc, silDeclRef, refType,
                                          declRef.getSubstitutions());
@@ -1118,16 +1108,22 @@ manageBufferForExprResult(SILValue buffer, const TypeLowering &bufferTL,
   return ManagedValue(buffer, enterDestroyCleanup(buffer));
 }
 
-RValue RValueEmitter::visitForceTryExpr(ForceTryExpr *E, SGFContext C) {
+SILGenFunction::ForceTryEmission::ForceTryEmission(SILGenFunction &SGF,
+                                                   Expr *loc)
+    : SGF(SGF), Loc(loc), OldThrowDest(SGF.ThrowDest) {
+  assert(loc && "cannot pass a null location");
+
   // Set up a "catch" block for when an error occurs.
   SILBasicBlock *catchBB = SGF.createBasicBlock(FunctionSection::Postmatter);
-  llvm::SaveAndRestore<JumpDest> throwDest{
-      SGF.ThrowDest,
-      JumpDest(catchBB, SGF.Cleanups.getCleanupsDepth(),
-               CleanupLocation::get(E))};
+  SGF.ThrowDest = JumpDest(catchBB, SGF.Cleanups.getCleanupsDepth(),
+                           CleanupLocation::get(loc));
+}
 
-  // Visit the sub-expression.
-  RValue result = visit(E->getSubExpr(), C);
+void SILGenFunction::ForceTryEmission::finish() {
+  assert(Loc && "emission already finished");
+
+  auto catchBB = SGF.ThrowDest.getBlock();
+  SGF.ThrowDest = OldThrowDest;
 
   // If there are no uses of the catch block, just drop it.
   if (catchBB->pred_empty()) {
@@ -1139,12 +1135,20 @@ RValue RValueEmitter::visitForceTryExpr(ForceTryExpr *E, SGFContext C) {
     ASTContext &ctx = SGF.getASTContext();
     auto error = catchBB->createPHIArgument(SILType::getExceptionType(ctx),
                                             ValueOwnershipKind::Owned);
-    SGF.B.createBuiltin(E, ctx.getIdentifier("unexpectedError"),
+    SGF.B.createBuiltin(Loc, ctx.getIdentifier("unexpectedError"),
                         SGF.SGM.Types.getEmptyTupleType(), {}, {error});
-    SGF.B.createUnreachable(E);
+    SGF.B.createUnreachable(Loc);
   }
 
-  return result;
+  // Prevent double-finishing and make the destructor a no-op.
+  Loc = nullptr;
+}
+
+RValue RValueEmitter::visitForceTryExpr(ForceTryExpr *E, SGFContext C) {
+  SILGenFunction::ForceTryEmission emission(SGF, E);
+
+  // Visit the sub-expression.
+  return visit(E->getSubExpr(), C);
 }
 
 RValue RValueEmitter::visitOptionalTryExpr(OptionalTryExpr *E, SGFContext C) {
@@ -2414,26 +2418,15 @@ RValue RValueEmitter::visitObjCSelectorExpr(ObjCSelectorExpr *e, SGFContext C) {
 static SILFunction *getOrCreateKeyPathGetter(SILGenFunction &SGF,
                                              SILLocation loc,
                                              VarDecl *property,
-                                             AccessStrategy strategy) {
-  // Build the signature of the thunk as expected by the keypath runtime.
-  // For concrete type properties, this is:
-  //   (@in Root, @thick Root.Type) -> @out Value
-  // with Root and Value maximally abstracted. For protocol properties, this is:
-  //   <Root: P> (@in Root) -> @out Value
-  // At the ABI level, this should lower to a signature looking like
-  //   void (sret void *outValue, void *inRoot, type *rootType, wtable *rootP)
-  // which can be abstractly invoked by the runtime.
-  auto typeContext = property->getDeclContext();
-  auto baseType = typeContext->getSelfInterfaceType()
-    ->getCanonicalType();
-  auto propertyType = baseType->getTypeOfMember(SGF.SGM.M.getSwiftModule(),
-                                                property)
-    ->getCanonicalType();
-  auto genericEnv = typeContext->getGenericEnvironmentOfContext();
-  auto genericSig = typeContext->getGenericSignatureOfContext()
-    ? typeContext->getGenericSignatureOfContext()->getCanonicalSignature()
+                                             AccessStrategy strategy,
+                                             GenericEnvironment *genericEnv,
+                                             CanType baseType,
+                                             CanType propertyType) {
+  auto genericSig = genericEnv
+    ? genericEnv->getGenericSignature()->getCanonicalSignature()
     : nullptr;
-  
+
+  // Build the signature of the thunk as expected by the keypath runtime.
   SILType loweredBaseTy, loweredPropTy;
   {
     GenericContextScope scope(SGF.SGM.Types, genericSig);
@@ -2443,16 +2436,8 @@ static SILFunction *getOrCreateKeyPathGetter(SILGenFunction &SGF,
                                        propertyType);
   }
   
-  SmallVector<SILParameterInfo, 2> params;
-  params.emplace_back(loweredBaseTy.getSwiftRValueType(),
-                      ParameterConvention::Indirect_In);
-  if (!typeContext->getAsProtocolOrProtocolExtensionContext()) {
-    // Add a thick metatype argument. This will act as a metadata source for the
-    // type's generic context, making the lowered calling convention uniform.
-    params.emplace_back(
-      CanMetatypeType::get(baseType, MetatypeRepresentation::Thick),
-      ParameterConvention::Direct_Unowned);
-  }
+  SILParameterInfo param(loweredBaseTy.getSwiftRValueType(),
+                         ParameterConvention::Indirect_In);
   SILResultInfo result(loweredPropTy.getSwiftRValueType(),
                        ResultConvention::Indirect);
   
@@ -2460,11 +2445,11 @@ static SILFunction *getOrCreateKeyPathGetter(SILGenFunction &SGF,
     SILFunctionType::ExtInfo(SILFunctionType::Representation::Thin,
                              /*pseudogeneric*/ false),
     ParameterConvention::Direct_Unowned,
-    params, result, None, SGF.getASTContext());
+    param, result, None, SGF.getASTContext());
   
   // Find the function and see if we already created it.
   auto name = Mangle::ASTMangler()
-    .mangleKeyPathGetterThunkHelper(property);
+    .mangleKeyPathGetterThunkHelper(property, genericSig, baseType);
   auto thunk = SGF.SGM.M.getOrCreateSharedFunction(loc, name,
                                                    signature,
                                                    IsBare,
@@ -2487,19 +2472,13 @@ static SILFunction *getOrCreateKeyPathGetter(SILGenFunction &SGF,
   SILGenFunction subSGF(SGM, *thunk);
   auto entry = thunk->begin();
   auto resultArgTy = result.getSILStorageType();
-  auto paramArgTy = params[0].getSILStorageType();
+  auto paramArgTy = param.getSILStorageType();
   if (genericEnv) {
     resultArgTy = genericEnv->mapTypeIntoContext(subSGF.SGM.M, resultArgTy);
     paramArgTy = genericEnv->mapTypeIntoContext(subSGF.SGM.M, paramArgTy);
   }
   auto resultArg = entry->createFunctionArgument(resultArgTy);
   auto paramArg = entry->createFunctionArgument(paramArgTy);
-  if (!typeContext->getAsProtocolOrProtocolExtensionContext()) {
-    auto metatypeArgTy = params[1].getSILStorageType();
-    if (genericEnv)
-      metatypeArgTy = genericEnv->mapTypeIntoContext(subSGF.SGM.M, metatypeArgTy);
-    entry->createFunctionArgument(metatypeArgTy);
-  }
   
   Scope scope(subSGF, loc);
   
@@ -2507,6 +2486,18 @@ static SILFunction *getOrCreateKeyPathGetter(SILGenFunction &SGF,
   auto paramSubstValue = subSGF.emitOrigToSubstValue(loc, paramOrigValue,
                                              AbstractionPattern::getOpaque(),
                                              baseType);
+  
+  // Upcast a class instance to the property's declared type if necessary.
+  if (auto propertyClass = dyn_cast<ClassDecl>(property->getDeclContext())) {
+    if (baseType->getClassOrBoundGenericClass() != propertyClass) {
+      do {
+        baseType = baseType->getSuperclass()->getCanonicalType();
+      } while (baseType->getClassOrBoundGenericClass() != propertyClass);
+      paramSubstValue = subSGF.B.createUpcast(loc, paramSubstValue,
+                                     SILType::getPrimitiveObjectType(baseType));
+    }
+  }
+  
   auto subs = baseType->getContextSubstitutionMap(subSGF.SGM.M.getSwiftModule(),
                property->getInnermostDeclContext()->getInnermostTypeContext());
   SmallVector<Substitution, 4> subsList;
@@ -2533,24 +2524,12 @@ static SILFunction *getOrCreateKeyPathGetter(SILGenFunction &SGF,
 SILFunction *getOrCreateKeyPathSetter(SILGenFunction &SGF,
                                       SILLocation loc,
                                       VarDecl *property,
-                                      AccessStrategy strategy) {
-  // Build the signature of the thunk as expected by the keypath runtime.
-  // For concrete type properties, this is:
-  //   (@in Value, @in Root, @thick Root.Type) -> ()
-  // with Root and Value maximally abstracted. For protocol properties, this is:
-  //   <Root: P> (@in Value, @in Root) -> ()
-  // At the ABI level, this should lower to a signature looking like
-  //   void (void *inValue, void *inRoot, type *rootType, wtable *rootP)
-  // which can be abstractly invoked by the runtime.
-  auto typeContext = property->getDeclContext();
-  auto baseType = typeContext->getSelfInterfaceType()
-    ->getCanonicalType();
-  auto propertyType = baseType->getTypeOfMember(SGF.SGM.M.getSwiftModule(),
-                                                property)
-    ->getCanonicalType();
-  auto genericEnv = typeContext->getGenericEnvironmentOfContext();
-  auto genericSig = typeContext->getGenericSignatureOfContext()
-    ? typeContext->getGenericSignatureOfContext()->getCanonicalSignature()
+                                      AccessStrategy strategy,
+                                      GenericEnvironment *genericEnv,
+                                      CanType baseType,
+                                      CanType propertyType) {
+  auto genericSig = genericEnv
+    ? genericEnv->getGenericSignature()->getCanonicalSignature()
     : nullptr;
 
   // Build the signature of the thunk as expected by the keypath runtime.
@@ -2563,35 +2542,27 @@ SILFunction *getOrCreateKeyPathSetter(SILGenFunction &SGF,
                                        propertyType);
   }
   
-  SmallVector<SILParameterInfo, 3> params;
-  // The newValue param
-  params.emplace_back(loweredPropTy.getSwiftRValueType(),
-                      ParameterConvention::Indirect_In);
-  // The base param
-  params.emplace_back(loweredBaseTy.getSwiftRValueType(),
-                      property->isSetterNonMutating()
-                        ? ParameterConvention::Indirect_In
-                        : ParameterConvention::Indirect_Inout);
+  SILParameterInfo propParam(loweredPropTy.getSwiftRValueType(),
+                             ParameterConvention::Indirect_In);
   
-  if (!typeContext->getAsProtocolOrProtocolExtensionContext()) {
-    // Add a thick metatype argument. This will act as a metadata source for the
-    // type's generic context, making the lowered calling convention uniform.
-    params.emplace_back(
-      CanMetatypeType::get(baseType, MetatypeRepresentation::Thick),
-      ParameterConvention::Direct_Unowned);
-  }
+  SILParameterInfo baseParam(loweredBaseTy.getSwiftRValueType(),
+                             property->isSetterNonMutating()
+                             ? ParameterConvention::Indirect_In
+                             : ParameterConvention::Indirect_Inout);
   
   auto signature = SILFunctionType::get(genericSig,
     SILFunctionType::ExtInfo(SILFunctionType::Representation::Thin,
                              /*pseudogeneric*/ false),
     ParameterConvention::Direct_Unowned,
-    params, {}, None, SGF.getASTContext());
+    {propParam, baseParam}, {}, None, SGF.getASTContext());
   
   // Mangle the name of the thunk to see if we already created it.
   SmallString<64> nameBuf;
   
   // Find the function and see if we already created it.
-  auto name = Mangle::ASTMangler().mangleKeyPathSetterThunkHelper(property);
+  auto name = Mangle::ASTMangler().mangleKeyPathSetterThunkHelper(property,
+                                                                  genericSig,
+                                                                  baseType);
   auto thunk = SGF.SGM.M.getOrCreateSharedFunction(loc, name,
                                                    signature,
                                                    IsBare,
@@ -2613,20 +2584,14 @@ SILFunction *getOrCreateKeyPathSetter(SILGenFunction &SGF,
   
   SILGenFunction subSGF(SGM, *thunk);
   auto entry = thunk->begin();
-  auto valueArgTy = params[0].getSILStorageType();
-  auto baseArgTy = params[1].getSILStorageType();
+  auto valueArgTy = propParam.getSILStorageType();
+  auto baseArgTy = baseParam.getSILStorageType();
   if (genericEnv) {
     valueArgTy = genericEnv->mapTypeIntoContext(subSGF.SGM.M, valueArgTy);
     baseArgTy = genericEnv->mapTypeIntoContext(subSGF.SGM.M, baseArgTy);
   }
   auto valueArg = entry->createFunctionArgument(valueArgTy);
   auto baseArg = entry->createFunctionArgument(baseArgTy);
-  if (!typeContext->getAsProtocolOrProtocolExtensionContext()) {
-    auto metatypeArgTy = params[2].getSILStorageType();
-    if (genericEnv)
-      metatypeArgTy = genericEnv->mapTypeIntoContext(subSGF.SGM.M, metatypeArgTy);
-    entry->createFunctionArgument(metatypeArgTy);
-  }
   
   Scope scope(subSGF, loc);
   
@@ -2641,6 +2606,17 @@ SILFunction *getOrCreateKeyPathSetter(SILGenFunction &SGF,
     auto baseSubst = subSGF.emitOrigToSubstValue(loc, baseOrig,
                                                  AbstractionPattern::getOpaque(),
                                                  baseType);
+    // Upcast a class instance to the property's declared type if necessary.
+    if (auto propertyClass = dyn_cast<ClassDecl>(property->getDeclContext())) {
+      if (baseType->getClassOrBoundGenericClass() != propertyClass) {
+        do {
+          baseType = baseType->getSuperclass()->getCanonicalType();
+        } while (baseType->getClassOrBoundGenericClass() != propertyClass);
+        baseSubst = subSGF.B.createUpcast(loc, baseSubst,
+                                     SILType::getPrimitiveObjectType(baseType));
+      }
+    }
+
     lv = LValue::forValue(baseSubst, baseType);
   } else {
     auto baseOrig = ManagedValue::forLValue(baseArg);
@@ -2690,7 +2666,12 @@ getIdForKeyPathComponentComputedProperty(SILGenFunction &SGF,
   }
   case AccessStrategy::DispatchToAccessor: {
     // Identify the property by its vtable or wtable slot.
-    return SILDeclRef(property->getGetter(), SILDeclRef::Kind::Func);
+    // Use the foreign selector if the decl is ObjC-imported, dynamic, or
+    // otherwise requires objc_msgSend for its ABI.
+    return SILDeclRef(property->getGetter(), SILDeclRef::Kind::Func,
+                      ResilienceExpansion::Minimal,
+                      /*curried*/ false,
+                      /*foreign*/ property->requiresForeignGetterAndSetter());
   }
   case AccessStrategy::BehaviorStorage:
     llvm_unreachable("unpossible");
@@ -2730,6 +2711,7 @@ RValue RValueEmitter::visitKeyPathExpr(KeyPathExpr *E, SGFContext C) {
     switch (component.getKind()) {
     case KeyPathExpr::Component::Kind::Property: {
       auto decl = cast<VarDecl>(component.getDeclRef().getDecl());
+      auto oldBaseTy = baseTy;
       baseTy = baseTy->getTypeOfMember(SGF.SGM.SwiftModule, decl)
         ->getCanonicalType();
       
@@ -2760,11 +2742,15 @@ RValue RValueEmitter::visitKeyPathExpr(KeyPathExpr *E, SGFContext C) {
         auto id = getIdForKeyPathComponentComputedProperty(SGF, decl,
                                                            strategy);
         auto getter = getOrCreateKeyPathGetter(SGF, SILLocation(E),
-                 decl, strategy);
+                 decl, strategy,
+                 needsGenericContext ? SGF.F.getGenericEnvironment() : nullptr,
+                 oldBaseTy, baseTy);
         
         if (decl->isSettable(decl->getDeclContext())) {
           auto setter = getOrCreateKeyPathSetter(SGF, SILLocation(E),
-                 decl, strategy);
+                 decl, strategy,
+                 needsGenericContext ? SGF.F.getGenericEnvironment() : nullptr,
+                 oldBaseTy, baseTy);
           loweredComponents.push_back(
             KeyPathPatternComponent::forComputedSettableProperty(id,
                                                                  getter, setter,
@@ -2790,7 +2776,7 @@ RValue RValueEmitter::visitKeyPathExpr(KeyPathExpr *E, SGFContext C) {
     case KeyPathExpr::Component::Kind::OptionalWrap:
       return unsupported("non-property key path component");
       
-    
+    case KeyPathExpr::Component::Kind::Invalid:
     case KeyPathExpr::Component::Kind::UnresolvedProperty:
     case KeyPathExpr::Component::Kind::UnresolvedSubscript:
       llvm_unreachable("not resolved");
@@ -2826,34 +2812,49 @@ visitKeyPathApplicationExpr(KeyPathApplicationExpr *E, SGFContext C) {
   auto root = SGF.emitMaterializedRValueAsOrig(E->getBase(),
                                                AbstractionPattern::getOpaque());
   auto keyPath = SGF.emitRValueAsSingleValue(E->getKeyPath());
-  
-  // Get the root and leaf type from the key path type.
-  auto keyPathTy = E->getKeyPath()->getType()->castTo<BoundGenericType>();
 
-  // Upcast the keypath to KeyPath<T, U> if it isn't already.
-  if (keyPathTy->getDecl() != SGF.getASTContext().getKeyPathDecl()) {
-    auto castToTy = BoundGenericType::get(SGF.getASTContext().getKeyPathDecl(),
+  auto keyPathDecl = E->getKeyPath()->getType()->getAnyNominal();
+  FuncDecl *projectFn;
+  SmallVector<Substitution, 4> subs;
+  
+  if (keyPathDecl == SGF.getASTContext().getAnyKeyPathDecl()) {
+    // Invoke projectKeyPathAny with the type of the base value.
+    // The result is always `Any?`.
+    projectFn = SGF.getASTContext().getProjectKeyPathAny(nullptr);
+    subs.push_back(Substitution(E->getBase()->getType(), {}));
+  } else {
+    auto keyPathTy = E->getKeyPath()->getType()->castTo<BoundGenericType>();
+    if (keyPathDecl == SGF.getASTContext().getPartialKeyPathDecl()) {
+      // Invoke projectKeyPathPartial with the type of the base value.
+      // The result is always `Any`.
+      projectFn = SGF.getASTContext().getProjectKeyPathPartial(nullptr);
+      subs.push_back(Substitution(keyPathTy->getGenericArgs()[0], {}));
+    } else {
+      projectFn = SGF.getASTContext().getProjectKeyPathReadOnly(nullptr);
+      // Get the root and leaf type from the key path type.
+      subs.push_back(Substitution(keyPathTy->getGenericArgs()[0], {}));
+      subs.push_back(Substitution(keyPathTy->getGenericArgs()[1], {}));
+
+      // Upcast the keypath to KeyPath<T, U> if it isn't already.
+      if (keyPathTy->getDecl() != SGF.getASTContext().getKeyPathDecl()) {
+        auto castToTy = BoundGenericType::get(
+                                          SGF.getASTContext().getKeyPathDecl(),
                                           nullptr,
                                           keyPathTy->getGenericArgs())
-      ->getCanonicalType();
-    auto upcast = SGF.B.createUpcast(SILLocation(E),
+          ->getCanonicalType();
+        auto upcast = SGF.B.createUpcast(SILLocation(E),
                                      keyPath.forward(SGF),
                                      SILType::getPrimitiveObjectType(castToTy));
-    keyPath = SGF.emitManagedRValueWithCleanup(upcast);
+        keyPath = SGF.emitManagedRValueWithCleanup(upcast);
+      }
+    }
   }
 
-  auto projectFn = SGF.getASTContext().getProjectKeyPathReadOnly(nullptr);
-  Substitution genericArgs[] = {
-    Substitution(keyPathTy->getGenericArgs()[0], {}),
-    Substitution(keyPathTy->getGenericArgs()[1], {}),
-  };
-
   auto genericArgsMap =
-    projectFn->getGenericSignature()->getSubstitutionMap(genericArgs);
+    projectFn->getGenericSignature()->getSubstitutionMap(subs);
 
   return SGF.emitApplyOfLibraryIntrinsic(SILLocation(E),
-                        SGF.getASTContext().getProjectKeyPathReadOnly(nullptr),
-                        genericArgsMap, {root, keyPath}, C);
+                        projectFn, genericArgsMap, {root, keyPath}, C);
 }
 
 RValue RValueEmitter::
@@ -3352,28 +3353,6 @@ RValue RValueEmitter::visitInjectIntoOptionalExpr(InjectIntoOptionalExpr *E,
   return RValue(SGF, E, result);
 }
 
-RValue RValueEmitter::visitLValueToPointerExpr(LValueToPointerExpr *E,
-                                               SGFContext C) {
-  LValue lv = SGF.emitLValue(E->getSubExpr(), AccessKind::ReadWrite);
-  SILValue address = SGF.emitAddressOfLValue(E->getSubExpr(),
-                                             std::move(lv),
-                                             AccessKind::ReadWrite)
-    .getUnmanagedValue();
-  // TODO: Reabstract the lvalue to match the abstraction level expected by
-  // the inout address conversion's InOutType. For now, just report cases where
-  // we would need a reabstraction as unsupported.
-  SILType abstractedTy
-    = SGF.getLoweredType(AbstractionPattern(E->getAbstractionPatternType()),
-                         E->getSubExpr()->getType()->getLValueOrInOutObjectType());
-  if (address->getType().getObjectType() != abstractedTy)
-    SGF.SGM.diagnose(E, diag::not_implemented,
-                     "abstraction difference in inout conversion");
-  
-  SILValue ptr = SGF.B.createAddressToPointer(E, address,
-                              SILType::getRawPointerType(SGF.getASTContext()));
-  return RValue(SGF, E, ManagedValue::forUnmanaged(ptr));
-}
-
 RValue RValueEmitter::visitClassMetatypeToObjectExpr(
                                                    ClassMetatypeToObjectExpr *E,
                                                    SGFContext C) {
@@ -3710,11 +3689,10 @@ namespace {
 /// emitOptimizedOptionalEvaluation - Look for cases where we can short-circuit
 /// evaluation of an OptionalEvaluationExpr by pattern matching the AST.
 ///
-static bool emitOptimizedOptionalEvaluation(OptionalEvaluationExpr *E,
-                                            SILValue &LoadableResult,
-                                            Initialization *optInit,
-                                            RValueEmitter &RVE) {
-  auto &SGF = RVE.SGF;
+static bool emitOptimizedOptionalEvaluation(SILGenFunction &SGF,
+                                            OptionalEvaluationExpr *E,
+                                            ManagedValue &result,
+                                            SGFContext ctx) {
   // It is a common occurrence to get conversions back and forth from T! to T?.
   // Peephole these by looking for a subexpression that is a BindOptionalExpr.
   // If we see one, we can produce a single instruction, which doesn't require
@@ -3736,16 +3714,41 @@ static bool emitOptimizedOptionalEvaluation(OptionalEvaluationExpr *E,
 
   // SIL defines away abstraction differences between T? and T!,
   // so we can just emit the sub-initialization normally.
-  if (optInit)
-    SGF.emitExprInto(BO->getSubExpr(), optInit);
-  else
-    LoadableResult = SGF.emitRValueAsSingleValue(BO->getSubExpr()).forward(SGF);
+  result = SGF.emitRValueAsSingleValue(BO->getSubExpr(), ctx);
   return true;
 }
 
 RValue RValueEmitter::visitOptionalEvaluationExpr(OptionalEvaluationExpr *E,
                                                   SGFContext C) {
-  auto &optTL = SGF.getTypeLowering(E->getType());
+  SmallVector<ManagedValue, 1> results;
+  SGF.emitOptionalEvaluation(E, E->getType(), results, C,
+    [&](SmallVectorImpl<ManagedValue> &results, SGFContext primaryC) {
+      ManagedValue result;
+      if (!emitOptimizedOptionalEvaluation(SGF, E, result, primaryC)) {
+        result = SGF.emitRValueAsSingleValue(E->getSubExpr(), primaryC);
+      }
+
+      assert(results.empty());
+      results.push_back(result);
+    });
+
+  assert(results.size() == 1);
+  if (results[0].isInContext()) {
+    return RValue();
+  } else {
+    return RValue(SGF, E, results[0]);
+  }
+}
+
+void SILGenFunction::emitOptionalEvaluation(SILLocation loc, Type optType,
+                                       SmallVectorImpl<ManagedValue> &results,
+                                            SGFContext C,
+                        llvm::function_ref<void(SmallVectorImpl<ManagedValue> &,
+                                                SGFContext primaryC)>
+                                              generateNormalResults) {
+  assert(results.empty());
+
+  auto &optTL = getTypeLowering(optType);
 
   Initialization *optInit = C.getEmitInto();
   bool usingProvidedContext =
@@ -3754,7 +3757,7 @@ RValue RValueEmitter::visitOptionalEvaluationExpr(OptionalEvaluationExpr *E,
   // Form the optional using address operations if the type is address-only or
   // if we already have an address to use.
   bool isByAddress = ((usingProvidedContext || optTL.isAddressOnly()) &&
-                      SGF.silConv.useLoweredAddresses());
+                      silConv.useLoweredAddresses());
 
   std::unique_ptr<TemporaryInitialization> optTemp;
   if (!isByAddress) {
@@ -3765,7 +3768,7 @@ RValue RValueEmitter::visitOptionalEvaluationExpr(OptionalEvaluationExpr *E,
     // Allocate the temporary for the Optional<T> if we didn't get one from the
     // context.  This needs to happen outside of the cleanups scope we're about
     // to push.
-    optTemp = SGF.emitTemporary(E, optTL);
+    optTemp = emitTemporary(loc, optTL);
     optInit = optTemp.get();
   }
   assert(isByAddress == (optInit != nullptr));
@@ -3773,37 +3776,37 @@ RValue RValueEmitter::visitOptionalEvaluationExpr(OptionalEvaluationExpr *E,
   // Acquire the address to emit into outside of the cleanups scope.
   SILValue optAddr;
   if (isByAddress)
-    optAddr = optInit->getAddressForInPlaceInitialization(SGF, E);
+    optAddr = optInit->getAddressForInPlaceInitialization(*this, loc);
 
   // Enter a cleanups scope.
-  FullExpr scope(SGF.Cleanups, E);
+  FullExpr scope(Cleanups, CleanupLocation::get(loc));
 
   // Inside of the cleanups scope, create a new initialization to
   // emit into optAddr.
   std::unique_ptr<TemporaryInitialization> normalInit;
   if (isByAddress) {
-    normalInit = SGF.useBufferAsTemporary(optAddr, optTL);
+    normalInit = useBufferAsTemporary(optAddr, optTL);
   }
 
   // Install a new optional-failure destination just outside of the
   // cleanups scope.
-  SILBasicBlock *failureBB = SGF.createBasicBlock();
-  RestoreOptionalFailureDest restoreFailureDest(SGF,
-                    JumpDest(failureBB, SGF.Cleanups.getCleanupsDepth(), E));
+  SILBasicBlock *failureBB = createBasicBlock();
+  RestoreOptionalFailureDest
+    restoreFailureDest(*this, JumpDest(failureBB, Cleanups.getCleanupsDepth(),
+                                       CleanupLocation::get(loc)));
 
-  SILValue normalArgument = nullptr;
-  if (emitOptimizedOptionalEvaluation(E, normalArgument,
-                                      normalInit.get(), *this)) {
-    // Already emitted code for this.
-  } else if (normalInit) {
-    // Emit the operand into the temporary.
-    SGF.emitExprInto(E->getSubExpr(), normalInit.get());
-  } else {
-    normalArgument = SGF.emitRValueAsSingleValue(E->getSubExpr()).forward(SGF);
+  generateNormalResults(results, SGFContext(normalInit.get()));
+  assert(results.size() >= 1 && "didn't include a normal result");
+  assert(results[0].isInContext() ||
+         results[0].getType().getObjectType()
+           == optTL.getLoweredType().getObjectType());
+
+  // If we're emitting into the context, make sure the normal value is there.
+  if (normalInit && !results[0].isInContext()) {
+    normalInit->copyOrInitValueInto(*this, loc, results[0], /*init*/ true);
+    normalInit->finishInitialization(*this);
+    results[0] = ManagedValue::forInContext();
   }
-
-  assert(isByAddress == (normalArgument == nullptr) &&
-         "shouldn't have emitted as scalar in this case");
 
   // We fell out of the normal result, which generated a T? as either
   // a scalar in normalArgument or directly into normalInit.
@@ -3811,8 +3814,31 @@ RValue RValueEmitter::visitOptionalEvaluationExpr(OptionalEvaluationExpr *E,
   // If we're using by-address initialization, we must've emitted into
   // normalInit.  Forward its cleanup before popping the scope.
   if (isByAddress) {
-    normalInit->getManagedAddress().forward(SGF);
+    normalInit->getManagedAddress().forward(*this);
     normalInit.reset(); // Make sure we don't use this anymore.
+  } else {
+    assert(!results[0].isInContext());
+    results[0].forward(*this);
+  }
+
+  // For all the secondary results, forward their cleanups and make sure
+  // they're of optional type so that we can inject nil into them in
+  // the failure path.
+  // (Should this be controllable by the client?)
+  for (auto &result : MutableArrayRef<ManagedValue>(results).slice(1)) {
+    assert(!result.isInContext() && "secondary result was in context");
+    auto resultTy = result.getType();
+    assert(resultTy.isObject() && "secondary result wasn't an object");
+
+    // Forward the cleanup.
+    SILValue value = result.forward(*this);
+
+    // If it's not already an optional type, make it optional.
+    if (!resultTy.getAnyOptionalObjectType()) {
+      resultTy = SILType::getOptionalType(resultTy);
+      value = B.createOptionalSome(loc, value, resultTy);
+      result = ManagedValue::forUnmanaged(value);
+    }
   }
 
   // This concludes the conditional scope.
@@ -3826,67 +3852,95 @@ RValue RValueEmitter::visitOptionalEvaluationExpr(OptionalEvaluationExpr *E,
     // Remove the dead failureBB.
     failureBB->eraseFromParent();
 
-    // Just re-manage normalArgument if we're not using address-based IRGen.
-    if (!isByAddress)
-      return RValue(SGF, E,
-                    SGF.emitManagedRValueWithCleanup(normalArgument, optTL));
+    // Just re-manage all the secondary results.
+    for (auto &result : MutableArrayRef<ManagedValue>(results).slice(1)) {
+      result = emitManagedRValueWithCleanup(result.getValue());
+    }
+
+    // Just re-manage the main result if we're not using address-based IRGen.
+    if (!isByAddress) {
+      results[0] = emitManagedRValueWithCleanup(results[0].getValue(), optTL);
+      return;
+    }
 
     // Otherwise, we must have emitted into normalInit, which means that,
     // now that we're out of the cleanups scope, we need to finish optInit.
-    optInit->finishInitialization(SGF);
+    assert(results[0].isInContext());
+    optInit->finishInitialization(*this);
 
     // If optInit came from the SGFContext, then we've successfully emitted
     // into that.
-    if (usingProvidedContext)
-      return RValue();
+    if (usingProvidedContext) return;
 
     // Otherwise, we must have emitted into optTemp.
-    return RValue(SGF, E, optTemp->getManagedAddress());
+    assert(optTemp);
+    results[0] = optTemp->getManagedAddress();
+    return;
   }
   
   // Okay, we do have uses of the failure block, so we'll need to merge
   // control paths.
 
-  SILBasicBlock *contBB = SGF.createBasicBlock();
+  SILBasicBlock *contBB = createBasicBlock();
 
   // Branch to the continuation block.
-  if (isByAddress)
-    SGF.B.createBranch(E, contBB);
-  else
-    SGF.B.createBranch(E, contBB, normalArgument);
+  SmallVector<SILValue, 4> bbArgs;
+  if (!isByAddress)
+    bbArgs.push_back(results[0].getValue());
+  for (const auto &result : llvm::makeArrayRef(results).slice(1))
+    bbArgs.push_back(result.getValue());
+
+  // Branch to the continuation block.
+  B.createBranch(loc, contBB, bbArgs);
 
   // In the failure block, inject nil into the result.
-  SGF.B.emitBlock(failureBB);
+  B.emitBlock(failureBB);
 
+  // Note that none of the code here introduces any cleanups.
+  // If it did, we'd need to push a scope.
+  bbArgs.clear();
   if (isByAddress) {
-    SGF.emitInjectOptionalNothingInto(E, optAddr, optTL);
-    SGF.B.createBranch(E, contBB);
+    emitInjectOptionalNothingInto(loc, optAddr, optTL);
   } else {
-    auto branchArg = SGF.getOptionalNoneValue(E, optTL);
-    SGF.B.createBranch(E, contBB, branchArg);
+    bbArgs.push_back(getOptionalNoneValue(loc, optTL));
   }
+  for (const auto &result : llvm::makeArrayRef(results).slice(1)) {
+    auto resultTy = result.getType();
+    bbArgs.push_back(getOptionalNoneValue(loc, getTypeLowering(resultTy)));
+  }
+  B.createBranch(loc, contBB, bbArgs);
 
   // Emit the continuation block.
-  SGF.B.emitBlock(contBB);
+  B.emitBlock(contBB);
 
-  // If this was done in SSA registers, then the value is provided as an
-  // argument to the block; manage it and return.
-  if (!isByAddress) {
+  // Create a PHI for the optional result if desired.
+  if (isByAddress) {
+    assert(results[0].isInContext());
+  } else {
     auto arg = contBB->createPHIArgument(optTL.getLoweredType(),
                                          ValueOwnershipKind::Owned);
-    return RValue(SGF, E, SGF.emitManagedRValueWithCleanup(arg, optTL));
+    results[0] = emitManagedRValueWithCleanup(arg, optTL);
   }
 
-  // Otherwise, we need to manage the value in optInit.
-  optInit->finishInitialization(SGF);
-  
-  // If we emitted into the provided context, we're done.
-  if (usingProvidedContext) {
-    return RValue();
+  // Create PHIs for all the secondary results and manage them.
+  for (auto &result : MutableArrayRef<ManagedValue>(results).slice(1)) {
+    auto arg = contBB->createPHIArgument(result.getType(),
+                                         ValueOwnershipKind::Owned);
+    result = emitManagedRValueWithCleanup(arg);
   }
-  
+
+  // We may need to manage the value in optInit.
+  if (!isByAddress) return;
+
+  assert(results[0].isInContext());
+  optInit->finishInitialization(*this);
+
+  // If we didn't emit into the provided context, the primary result
+  // is really a temporary.
+  if (usingProvidedContext) return;
+
   assert(optTemp);
-  return RValue(SGF, E, optTemp->getManagedAddress());
+  results[0] = optTemp->getManagedAddress();
 }
 
 RValue RValueEmitter::visitForceValueExpr(ForceValueExpr *E, SGFContext C) {
@@ -3985,29 +4039,37 @@ void SILGenFunction::emitOpenExistentialExprImpl(
        llvm::function_ref<void(Expr *)> emitSubExpr) {
   Optional<FormalEvaluationScope> writebackScope;
 
+  Type opaqueValueType = E->getOpaqueValue()->getType()->getRValueType();
+
   // Emit the existential value.
-  ManagedValue existentialValue;
+  SILGenFunction::OpaqueValueState state;
+
   AccessKind accessKind;
   if (E->getExistentialValue()->getType()->is<LValueType>()) {
     // Create a writeback scope for the access to the existential lvalue.
     writebackScope.emplace(*this);
 
+    Type formalRValueType =
+      E->getOpaqueValue()->getType()->getLValueOrInOutObjectType();
+
     accessKind = E->getExistentialValue()->getLValueAccessKind();
-    existentialValue = emitAddressOfLValue(
-                         E->getExistentialValue(),
-                         emitLValue(E->getExistentialValue(), accessKind),
-                         accessKind);
+    auto lv = emitLValue(E->getExistentialValue(), accessKind);
+    lv = emitOpenExistentialLValue(E, std::move(lv),
+                                   CanArchetypeType(E->getOpenedArchetype()),
+                                   formalRValueType->getCanonicalType(),
+                                   accessKind);
+    auto addr = emitAddressOfLValue(E, std::move(lv), accessKind);
+    state = {addr, false, false};
   } else {
     accessKind = AccessKind::Read;
-    existentialValue = emitRValueAsSingleValue(
-                         E->getExistentialValue(),
-                         SGFContext::AllowGuaranteedPlusZero);
-  }
+    auto existentialValue = emitRValueAsSingleValue(
+      E->getExistentialValue(),
+      SGFContext::AllowGuaranteedPlusZero);
   
-  Type opaqueValueType = E->getOpaqueValue()->getType()->getRValueType();
-  SILGenFunction::OpaqueValueState state = emitOpenExistential(
+    state = emitOpenExistential(
       E, existentialValue, E->getOpenedArchetype(),
       getLoweredType(opaqueValueType), accessKind);
+  }
 
   // Register the opaque value for the projected existential.
   SILGenFunction::OpaqueValueRAII opaqueValueRAII(
@@ -4133,13 +4195,10 @@ public:
 };
 } // end anonymous namespace
 
-RValue RValueEmitter::visitInOutToPointerExpr(InOutToPointerExpr *E,
-                                              SGFContext C) {
-  // If we're converting on the behalf of an
-  // AutoreleasingUnsafeMutablePointer, convert the lvalue to
-  // unowned(unsafe), so we can point at +0 storage.
+SILGenFunction::PointerAccessInfo
+SILGenFunction::getPointerAccessInfo(Type type) {
   PointerTypeKind pointerKind;
-  Type elt = E->getType()->getAnyPointerElementType(pointerKind);
+  Type elt = type->getAnyPointerElementType(pointerKind);
   assert(elt && "not a pointer");
   (void)elt;
 
@@ -4147,23 +4206,27 @@ RValue RValueEmitter::visitInOutToPointerExpr(InOutToPointerExpr *E,
     ((pointerKind == PTK_UnsafePointer || pointerKind == PTK_UnsafeRawPointer)
        ? AccessKind::Read : AccessKind::ReadWrite);
 
-  // Get the original lvalue.
-  LValue lv = SGF.emitLValue(cast<InOutExpr>(E->getSubExpr())->getSubExpr(),
-                             accessKind);
+  return { type->getCanonicalType(), pointerKind, accessKind };
+}
 
-  auto ptr = SGF.emitLValueToPointer(E, std::move(lv),
-                                     E->getType()->getCanonicalType(),
-                                     pointerKind, accessKind);
+RValue RValueEmitter::visitInOutToPointerExpr(InOutToPointerExpr *E,
+                                              SGFContext C) {
+  // If we're converting on the behalf of an
+  // AutoreleasingUnsafeMutablePointer, convert the lvalue to
+  // unowned(unsafe), so we can point at +0 storage.
+  auto accessInfo = SGF.getPointerAccessInfo(E->getType());
+
+  // Get the original lvalue.
+  LValue lv = SGF.emitLValue(E->getSubExpr(), accessInfo.AccessKind);
+
+  auto ptr = SGF.emitLValueToPointer(E, std::move(lv), accessInfo);
   return RValue(SGF, E, ptr);
 }
 
 /// Convert an l-value to a pointer type: unsafe, unsafe-mutable, or
 /// autoreleasing-unsafe-mutable.
-ManagedValue SILGenFunction::emitLValueToPointer(SILLocation loc,
-                                                 LValue &&lv,
-                                                 CanType pointerType,
-                                                 PointerTypeKind pointerKind,
-                                                 AccessKind accessKind) {
+ManagedValue SILGenFunction::emitLValueToPointer(SILLocation loc, LValue &&lv,
+                                                PointerAccessInfo pointerInfo) {
   // The incoming lvalue should be at the abstraction level of T in
   // Unsafe*Pointer<T>. Reabstract it if necessary.
   auto opaqueTy = AbstractionPattern::getOpaque();
@@ -4172,7 +4235,7 @@ ManagedValue SILGenFunction::emitLValueToPointer(SILLocation loc,
         != loweredTy.getSwiftRValueType()) {
     lv.addSubstToOrigComponent(opaqueTy, loweredTy);
   }
-  switch (pointerKind) {
+  switch (pointerInfo.PointerKind) {
   case PTK_UnsafeMutablePointer:
   case PTK_UnsafePointer:
   case PTK_UnsafeMutableRawPointer:
@@ -4198,6 +4261,7 @@ ManagedValue SILGenFunction::emitLValueToPointer(SILLocation loc,
   }
 
   // Get the lvalue address as a raw pointer.
+  auto accessKind = pointerInfo.AccessKind;
   SILValue address =
     emitAddressOfLValue(loc, std::move(lv), accessKind).getUnmanagedValue();
   address = B.createAddressToPointer(loc, address,
@@ -4211,6 +4275,7 @@ ManagedValue SILGenFunction::emitLValueToPointer(SILLocation loc,
   FuncDecl *converter =
     getASTContext().getConvertInOutToPointerArgument(nullptr);
 
+  auto pointerType = pointerInfo.PointerType;
   auto subMap = pointerType->getContextSubstitutionMap(SGM.M.getSwiftModule(),
                                                        getPointerProtocol());
   return emitApplyOfLibraryIntrinsic(loc, converter, subMap,
@@ -4218,34 +4283,30 @@ ManagedValue SILGenFunction::emitLValueToPointer(SILLocation loc,
                                      SGFContext())
            .getAsSingleValue(*this, loc);
 }
-RValue RValueEmitter::visitArrayToPointerExpr(ArrayToPointerExpr *E,
-                                              SGFContext C) {
-  FormalEvaluationScope writeback(SGF);
 
-  auto &Ctx = SGF.getASTContext();
+static std::pair<ManagedValue, ManagedValue>
+emitArrayToPointer(SILGenFunction &SGF, SILLocation loc, ManagedValue array,
+                   SILGenFunction::ArrayAccessInfo accessInfo) {
+  auto &ctx = SGF.getASTContext();
+
   FuncDecl *converter;
-  ManagedValue orig;
+  if (accessInfo.AccessKind == AccessKind::Read) {
+    converter = ctx.getConvertConstArrayToPointerArgument(nullptr);
+    if (array.isLValue())
+      array = SGF.B.createLoadCopy(loc, array);
 
-  // Convert the array mutably if it's being passed inout.
-  auto subExpr = E->getSubExpr();
-  if (subExpr->getType()->is<InOutType>()) {
-    converter = Ctx.getConvertMutableArrayToPointerArgument(nullptr);
-    orig = SGF.emitAddressOfLValue(subExpr,
-                               SGF.emitLValue(subExpr, AccessKind::ReadWrite),
-                                   AccessKind::ReadWrite);
   } else {
-    converter = Ctx.getConvertConstArrayToPointerArgument(nullptr);
-    orig = SGF.emitRValueAsSingleValue(subExpr);
+    converter = ctx.getConvertMutableArrayToPointerArgument(nullptr);
+    assert(array.isLValue());
   }
 
   // Invoke the conversion intrinsic, which will produce an owner-pointer pair.
   auto *M = SGF.SGM.M.getSwiftModule();
-  auto firstSubMap = subExpr->getType()->getInOutObjectType()
-    ->getContextSubstitutionMap(
-      M, Ctx.getArrayDecl());
-  auto secondSubMap = E->getType()
-    ->getContextSubstitutionMap(
-      M, SGF.getPointerProtocol());
+  auto firstSubMap =
+    accessInfo.ArrayType->getContextSubstitutionMap(M, ctx.getArrayDecl());
+  auto secondSubMap =
+    accessInfo.PointerType->getContextSubstitutionMap(M,
+                                                      SGF.getPointerProtocol());
 
   auto *genericSig = converter->getGenericSignature();
   auto subMap =
@@ -4256,34 +4317,95 @@ RValue RValueEmitter::visitArrayToPointerExpr(ArrayToPointerExpr *E,
                                              genericSig);
 
   SmallVector<ManagedValue, 2> resultScalars;
-  SGF.emitApplyOfLibraryIntrinsic(E, converter, subMap, orig, SGFContext())
+  SGF.emitApplyOfLibraryIntrinsic(loc, converter, subMap, array, SGFContext())
     .getAll(resultScalars);
   assert(resultScalars.size() == 2);
-  
-  // The owner's already in its own cleanup.  Return the pointer.
-  return RValue(SGF, E, resultScalars[1]);
-}
-RValue RValueEmitter::visitStringToPointerExpr(StringToPointerExpr *E,
-                                               SGFContext C) {
-  auto &Ctx = SGF.getASTContext();
-  FuncDecl *converter = Ctx.getConvertConstStringToUTF8PointerArgument(nullptr);
 
-  // Get the original value.
-  ManagedValue orig = SGF.emitRValueAsSingleValue(E->getSubExpr());
-  
-  // Invoke the conversion intrinsic, which will produce an owner-pointer pair.
-  auto subMap = E->getType()->getCanonicalType()
-    ->getContextSubstitutionMap(SGF.SGM.M.getSwiftModule(),
-                                SGF.getPointerProtocol());
-  SmallVector<ManagedValue, 2> results;
-  SGF.emitApplyOfLibraryIntrinsic(E, converter, subMap, orig, C).getAll(results);
-  assert(results.size() == 2);
-  
-  // Implicitly leave the owner managed and return the pointer.
-  // FIXME: should this be using mark_dependence?
-  auto pointer = results[1];
+  // Mark the dependence of the pointer on the owner value.
+  auto owner = resultScalars[0];
+  auto pointer = resultScalars[1].forward(SGF);
+  pointer = SGF.B.createMarkDependence(loc, pointer, owner.getValue());
+
+  // The owner's already in its own cleanup.  Return the pointer.
+  return {ManagedValue::forTrivialObjectRValue(pointer), owner};
+}
+
+RValue RValueEmitter::visitArrayToPointerExpr(ArrayToPointerExpr *E,
+                                              SGFContext C) {
+  FormalEvaluationScope writeback(SGF);
+
+  auto subExpr = E->getSubExpr();
+  auto accessInfo = SGF.getArrayAccessInfo(E->getType(),
+                                     subExpr->getType()->getInOutObjectType());
+
+  // Convert the array mutably if it's being passed inout.
+  ManagedValue array;
+  if (accessInfo.AccessKind != AccessKind::Read) {
+    array = SGF.emitAddressOfLValue(subExpr,
+                                SGF.emitLValue(subExpr, AccessKind::ReadWrite),
+                                    AccessKind::ReadWrite);
+  } else {
+    array = SGF.emitRValueAsSingleValue(subExpr);
+  }
+
+  auto pointer = ::emitArrayToPointer(SGF, E, array, accessInfo).first;
   return RValue(SGF, E, pointer);
 }
+
+SILGenFunction::ArrayAccessInfo
+SILGenFunction::getArrayAccessInfo(Type pointerType, Type arrayType) {
+  auto pointerAccessInfo = getPointerAccessInfo(pointerType);
+  return { pointerType, arrayType, pointerAccessInfo.AccessKind };
+}
+
+std::pair<ManagedValue, ManagedValue>
+SILGenFunction::emitArrayToPointer(SILLocation loc, LValue &&lv,
+                                   ArrayAccessInfo accessInfo) {
+  auto array =
+    emitAddressOfLValue(loc, std::move(lv), accessInfo.AccessKind);
+  return ::emitArrayToPointer(*this, loc, array, accessInfo);
+}
+
+std::pair<ManagedValue, ManagedValue>
+SILGenFunction::emitArrayToPointer(SILLocation loc, ManagedValue array,
+                                   ArrayAccessInfo accessInfo) {
+  return ::emitArrayToPointer(*this, loc, array, accessInfo);
+}
+
+RValue RValueEmitter::visitStringToPointerExpr(StringToPointerExpr *E,
+                                               SGFContext C) {
+  // Get the original value.
+  ManagedValue orig = SGF.emitRValueAsSingleValue(E->getSubExpr());
+
+  // Perform the conversion.
+  auto results = SGF.emitStringToPointer(E, orig, E->getType());
+
+  // Implicitly leave the owner managed and return the pointer.
+  return RValue(SGF, E, results.first);
+}
+
+std::pair<ManagedValue, ManagedValue>
+SILGenFunction::emitStringToPointer(SILLocation loc, ManagedValue stringValue,
+                                    Type pointerType) {
+  auto &Ctx = getASTContext();
+  FuncDecl *converter = Ctx.getConvertConstStringToUTF8PointerArgument(nullptr);
+  
+  // Invoke the conversion intrinsic, which will produce an owner-pointer pair.
+  auto subMap = pointerType->getContextSubstitutionMap(SGM.M.getSwiftModule(),
+                                                       getPointerProtocol());
+  SmallVector<ManagedValue, 2> results;
+  emitApplyOfLibraryIntrinsic(loc, converter, subMap, stringValue, SGFContext())
+    .getAll(results);
+  assert(results.size() == 2);
+
+  // Mark the dependence of the pointer on the owner value.
+  auto owner = results[0];
+  auto pointer = results[1].forward(*this);
+  pointer = B.createMarkDependence(loc, pointer, owner.getValue());
+
+  return {ManagedValue::forTrivialObjectRValue(pointer), owner};
+}
+
 RValue RValueEmitter::visitPointerToPointerExpr(PointerToPointerExpr *E,
                                                 SGFContext C) {
   auto &Ctx = SGF.getASTContext();

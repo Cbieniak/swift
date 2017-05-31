@@ -6,7 +6,7 @@
 func sameType<T>(_: T.Type, _: T.Type) {}
 
 protocol P {
-    associatedtype A
+    associatedtype A // expected-note{{'A' declared here}}
     typealias X = A
 }
 protocol Q {
@@ -62,7 +62,7 @@ protocol Q3: P3 {
 protocol P3_1 {
     typealias T = Float // expected-error{{type alias 'T' requires types 'P3.T' (aka 'Int') and 'Float' to be the same}}
 }
-protocol Q3_1: P3, P3_1 {}
+protocol Q3_1: P3, P3_1 {} // expected-error{{generic signature requires types 'Float'}}
 
 // FIXME: these shouldn't be necessary to trigger the errors above, but are, due to
 // the 'recursive decl validation' FIXME in GenericSignatureBuilder.cpp.
@@ -72,7 +72,7 @@ func useTypealias1<T: Q3_1>(_: T, _: T.T) {}
 // Subprotocols can force associated types in their parents to be concrete, and
 // this should be understood for types constrained by the subprotocols.
 protocol Q4: P {
-    typealias A = Int
+    typealias A = Int // expected-warning{{typealias overriding associated type 'A' from protocol 'P'}}
 }
 protocol Q5: P {
     typealias X = Int
@@ -98,13 +98,13 @@ func checkQ5_X<T: Q5>(x: T.Type) { sameType(getP_X(x), Int.self) }
 // Typealiases happen to allow imposing same type requirements between parent
 // protocols
 protocol P6_1 {
-    associatedtype A
+    associatedtype A // expected-note{{'A' declared here}}
 }
 protocol P6_2 {
     associatedtype B
 }
 protocol Q6: P6_1, P6_2 {
-    typealias A = B
+    typealias A = B // expected-warning{{typealias overriding associated type}}
 }
 
 func getP6_1_A<T: P6_1>(_: T.Type) -> T.A.Type { return T.A.self }
