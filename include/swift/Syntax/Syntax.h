@@ -39,7 +39,6 @@ namespace syntax {
 const auto NoParent = llvm::None;
 
 class SyntaxData;
-class UnknownSyntaxData;
 
 /// The main handle for syntax nodes - subclasses contain all public
 /// structured editing APIs.
@@ -53,7 +52,6 @@ class Syntax {
   friend class SyntaxData;
   friend class LegacyASTTransformer;
   friend class sema::Semantics;
-  using DataType = SyntaxData;
 
 #define SYNTAX(Id, Parent) friend class Id##Syntax;
 #include "swift/Syntax/SyntaxKinds.def"
@@ -69,7 +67,15 @@ protected:
   /// lazily created.
   mutable const SyntaxData *Data;
 
+  template <typename SyntaxNode>
+  typename SyntaxNode::DataType *getUnsafeData() const {
+    auto Casted = cast<typename SyntaxNode::DataType>(Data);
+    return const_cast<typename SyntaxNode::DataType *>(Casted);
+  }
+
 public:
+  using DataType = SyntaxData;
+
   Syntax(const RC<SyntaxData> Root, const SyntaxData *Data);
 
   /// Get the kind of syntax.
@@ -81,14 +87,18 @@ public:
   /// Returns true if the syntax node is of the given type.
   template <typename T>
   bool is() const {
-    return T::classof(Data);
+    return T::classof(this);
   }
 
   /// Get the Data for this Syntax node.
   template <typename T>
-  typename T::DataType getData() const {
+  typename T::DataType &getData() const {
     assert(is<T>() && "getData<T>() node of incompatible type!");
-    return reinterpret_cast<typename T::DataType *>(Data);
+    return *reinterpret_cast<typename T::DataType *>(Data);
+  }
+
+  const SyntaxData *getDataPointer() const {
+    return Data;
   }
 
   /// Cast this Syntax node to a more specific type, asserting it's of the
@@ -122,8 +132,14 @@ public:
   /// Returns true if this syntax node represents a declaration.
   bool isDecl() const;
 
+  /// Returns true if this syntax node represents an expression.
+  bool isExpr() const;
+
   /// Returns true if this syntax node represents a type.
   bool isType() const;
+
+  /// Returns true if this syntax is of some "unknown" kind.
+  bool isUnknown() const;
 
   /// Print the syntax node with full fidelity to the given output stream.
   void print(llvm::raw_ostream &OS) const;
@@ -134,19 +150,12 @@ public:
 
   /// Print a debug representation of the syntax node to standard error.
   void dump() const;
-};
 
-/// A chunk of "unknown" syntax - effectively a sequence of tokens.
-class UnknownSyntax final : public Syntax {
-  friend struct SyntaxFactory;
-
-  UnknownSyntax(const RC<SyntaxData> Root, UnknownSyntaxData *Data);
-  static UnknownSyntax make(RC<RawSyntax> Raw);
-
-public:
-  static bool classof(const Syntax *S) {
-    return S->getKind() == SyntaxKind::Unknown;
+  bool hasSameIdentityAs(const Syntax &Other) const {
+    return Root == Other.Root && Data == Other.Data;
   }
+
+  // TODO: hasSameStructureAs ?
 };
 
 } // end namespace syntax

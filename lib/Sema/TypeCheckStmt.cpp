@@ -17,11 +17,14 @@
 #include "TypeChecker.h"
 #include "MiscDiagnostics.h"
 #include "swift/Subsystems.h"
+#include "swift/AST/ASTPrinter.h"
 #include "swift/AST/ASTWalker.h"
 #include "swift/AST/ASTVisitor.h"
+#include "swift/AST/DiagnosticsSema.h"
 #include "swift/AST/Identifier.h"
 #include "swift/AST/Initializer.h"
 #include "swift/AST/NameLookup.h"
+#include "swift/AST/ParameterList.h"
 #include "swift/AST/PrettyStackTrace.h"
 #include "swift/Basic/Range.h"
 #include "swift/Basic/STLExtras.h"
@@ -29,6 +32,7 @@
 #include "swift/Basic/Statistic.h"
 #include "swift/Parse/Lexer.h"
 #include "swift/Parse/LocalContext.h"
+#include "swift/Syntax/TokenKinds.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/PointerUnion.h"
 #include "llvm/ADT/SmallString.h"
@@ -239,21 +243,21 @@ static void tryDiagnoseUnnecessaryCastOverOptionSet(ASTContext &Ctx,
         NTD->lookupConformance(module, optionSetType, conformances)))
     return;
 
-  CallExpr *CE = dyn_cast<CallExpr>(E);
+  auto *CE = dyn_cast<CallExpr>(E);
   if (!CE)
     return;
   if (!isa<ConstructorRefCallExpr>(CE->getFn()))
     return;
-  ParenExpr *ParenE = dyn_cast<ParenExpr>(CE->getArg());
+  auto *ParenE = dyn_cast<ParenExpr>(CE->getArg());
   if (!ParenE)
     return;
-  MemberRefExpr *ME = dyn_cast<MemberRefExpr>(ParenE->getSubExpr());
+  auto *ME = dyn_cast<MemberRefExpr>(ParenE->getSubExpr());
   if (!ME)
     return;
   ValueDecl *VD = ME->getMember().getDecl();
-  if (!VD || VD->getName() != Ctx.Id_rawValue)
+  if (!VD || VD->getBaseName() != Ctx.Id_rawValue)
     return;
-  MemberRefExpr *BME = dyn_cast<MemberRefExpr>(ME->getBase());
+  auto *BME = dyn_cast<MemberRefExpr>(ME->getBase());
   if (!BME)
     return;
   if (!BME->getType()->isEqual(ResultType))
@@ -652,6 +656,9 @@ public:
                                       *conformance,
                                       TC.Context.Id_Iterator,
                                       diag::sequence_protocol_broken);
+
+      if (!generatorTy)
+        return nullptr;
       
       Expr *getIterator
         = TC.callWitness(sequence, DC, sequenceProto, *conformance,
@@ -850,9 +857,11 @@ public:
   }
   
   Stmt *visitSwitchStmt(SwitchStmt *S) {
+    bool hadError = false;
+
     // Type-check the subject expression.
     Expr *subjectExpr = S->getSubjectExpr();
-    TC.typeCheckExpression(subjectExpr, DC);
+    hadError |= TC.typeCheckExpression(subjectExpr, DC);
     if (Expr *newSubjectExpr = TC.coerceToMaterializable(subjectExpr))
       subjectExpr = newSubjectExpr;
     S->setSubjectExpr(subjectExpr);
@@ -875,8 +884,10 @@ public:
                                                  /*isStmtCondition*/false)) {
           pattern = newPattern;
           // Coerce the pattern to the subject's type.
-          if (TC.coercePatternToType(pattern, DC, subjectType,
+          if (!subjectType || TC.coercePatternToType(pattern, DC, subjectType,
                                      TR_InExpression)) {
+            hadError = true;
+
             // If that failed, mark any variables binding pieces of the pattern
             // as invalid to silence follow-on errors.
             pattern->forEachVariable([&](VarDecl *VD) {
@@ -911,17 +922,21 @@ public:
 
         // Check the guard expression, if present.
         if (auto *guard = labelItem.getGuardExpr()) {
-          TC.typeCheckCondition(guard, DC);
+          hadError |= TC.typeCheckCondition(guard, DC);
           labelItem.setGuardExpr(guard);
         }
       }
       
       // Type-check the body statements.
       Stmt *body = caseBlock->getBody();
-      typeCheckStmt(body);
+      hadError |= typeCheckStmt(body);
       caseBlock->setBody(body);
     }
-    
+
+    if (!S->isImplicit()) {
+      TC.checkSwitchExhaustiveness(S, /*limitChecking*/hadError);
+    }
+
     return S;
   }
 
@@ -976,8 +991,8 @@ public:
     // There is nothing more to do.
     return S;
   }
+
 };
-  
 } // end anonymous namespace
 
 bool TypeChecker::typeCheckCatchPattern(CatchStmt *S, DeclContext *DC) {
@@ -1057,6 +1072,12 @@ void TypeChecker::checkIgnoredExpr(Expr *E) {
     }
     return;
   }
+  
+  // Skip checking if there is no type, which presumably means there was a 
+  // type error.
+  if (!E->getType()) {
+    return;
+  }
 
   // Complain about l-values that are neither loaded nor stored.
   if (E->getType()->isLValueType()) {
@@ -1116,7 +1137,7 @@ void TypeChecker::checkIgnoredExpr(Expr *E) {
   }
 
   // Complain about '#keyPath'.
-  if (isa<ObjCKeyPathExpr>(valueE)) {
+  if (isa<KeyPathExpr>(valueE)) {
     diagnose(valueE->getLoc(), diag::expression_unused_keypath_result)
       .highlight(E->getSourceRange());
     return;
@@ -1185,11 +1206,11 @@ void TypeChecker::checkIgnoredExpr(Expr *E) {
     // constructor calls during CSApply / ExprRewriter::convertLiteral.
     if (call->isImplicit()) {
       Expr *arg = call->getArg();
-      if (TupleExpr *TE = dyn_cast<TupleExpr>(arg))
+      if (auto *TE = dyn_cast<TupleExpr>(arg))
         if (TE->getNumElements() == 1)
           arg = TE->getElement(0);
 
-      if (LiteralExpr *LE = dyn_cast<LiteralExpr>(arg)) {
+      if (auto *LE = dyn_cast<LiteralExpr>(arg)) {
         diagnoseIgnoredLiteral(*this, LE);
         return;
       }
@@ -1233,7 +1254,7 @@ void TypeChecker::checkIgnoredExpr(Expr *E) {
 Stmt *StmtChecker::visitBraceStmt(BraceStmt *BS) {
   const SourceManager &SM = TC.Context.SourceMgr;
   for (auto &elem : BS->getElements()) {
-    if (Expr *SubExpr = elem.dyn_cast<Expr*>()) {
+    if (auto *SubExpr = elem.dyn_cast<Expr*>()) {
       SourceLoc Loc = SubExpr->getStartLoc();
       if (EndTypeCheckLoc.isValid() &&
           (Loc == EndTypeCheckLoc || SM.isBeforeInBuffer(EndTypeCheckLoc, Loc)))
@@ -1268,7 +1289,7 @@ Stmt *StmtChecker::visitBraceStmt(BraceStmt *BS) {
       continue;
     }
 
-    if (Stmt *SubStmt = elem.dyn_cast<Stmt*>()) {
+    if (auto *SubStmt = elem.dyn_cast<Stmt*>()) {
       SourceLoc Loc = SubStmt->getStartLoc();
       if (EndTypeCheckLoc.isValid() &&
           (Loc == EndTypeCheckLoc || SM.isBeforeInBuffer(EndTypeCheckLoc, Loc)))
@@ -1316,10 +1337,14 @@ static void checkDefaultArguments(TypeChecker &tc,
         ->changeResilienceExpansion(expansion);
 
     // Type-check the initializer, then flag that we did so.
-    if (!tc.typeCheckExpression(e, initContext,
-                                TypeLoc::withoutLoc(param->getType()),
-                                CTP_DefaultParameter))
+    bool hadError = tc.typeCheckExpression(e, initContext,
+                                           TypeLoc::withoutLoc(param->getType()),
+                                           CTP_DefaultParameter);
+    if (!hadError) {
       param->setDefaultValue(e);
+    } else {
+      param->setDefaultValue(nullptr);
+    }
 
     tc.checkInitializerErrorHandling(initContext, e);
 
@@ -1351,6 +1376,9 @@ bool TypeChecker::typeCheckAbstractFunctionBody(AbstractFunctionDecl *AFD) {
     return false;
 
   SWIFT_FUNC_STAT;
+  // FIXME: (transitional) increment the redundant "always-on" counter.
+  if (Context.Stats)
+    Context.Stats->getFrontendCounters().NumFunctionsTypechecked++;
 
   Optional<FunctionBodyTimer> timer;
   if (DebugTimeFunctionBodies || WarnLongFunctionBodies)
@@ -1511,7 +1539,7 @@ bool TypeChecker::typeCheckConstructorBodyUntil(ConstructorDecl *ctor,
   if (nominalDecl == nullptr)
     return HadError;
 
-  ClassDecl *ClassD = dyn_cast<ClassDecl>(nominalDecl);
+  auto *ClassD = dyn_cast<ClassDecl>(nominalDecl);
   bool wantSuperInitCall = false;
   if (ClassD) {
     bool isDelegating = false;

@@ -20,6 +20,7 @@ import TestsUtils
 
 @inline(never)
 public func run_NSDictionaryCastToSwift(_ N: Int) {
+#if _runtime(_ObjC)
     let NSDict = NSDictionary()
     var swiftDict = [String: NSObject]()
     for _ in 1...10000*N {
@@ -28,7 +29,6 @@ public func run_NSDictionaryCastToSwift(_ N: Int) {
             break
         }
     }
-    CheckResults(swiftDict.isEmpty,
-            "Incorrect result in swiftDict.isEmpty: " +
-            "\(swiftDict.isEmpty) != true\n")
+    CheckResults(swiftDict.isEmpty)
+#endif
 }

@@ -1,4 +1,4 @@
-//===--- Syntax.cpp - Swift Syntax Implementation ---------------*- C++ -*-===//
+//===--- Syntax.cpp - Swift Syntax Implementation -------------------------===//
 //
 // This source file is part of the Swift.org open source project
 //
@@ -51,16 +51,11 @@ bool Syntax::isStmt() const {
   return Data->isStmt();
 }
 
-#pragma mark - unknown-syntax API
+bool Syntax::isExpr() const {
+  return Data->isExpr();
+}
 
-UnknownSyntax::UnknownSyntax(const RC<SyntaxData> Root,
-                             UnknownSyntaxData *Data)
-  : Syntax(Root, Data) {}
-
-UnknownSyntax UnknownSyntax::make(RC<RawSyntax> Raw) {
-  auto Data = UnknownSyntaxData::make(Raw);
-  return UnknownSyntax {
-    Data, Data.get()
-  };
+bool Syntax::isUnknown() const {
+  return Data->isUnknown();
 }
 

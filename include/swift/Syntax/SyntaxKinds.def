@@ -1,4 +1,4 @@
-//===--- SyntaxKinds.def - Swift Syntax Node Metaprogramming -------------===//
+//===--- SyntaxKinds.def - Swift Syntax Node Metaprogramming --------------===//
 //
 // This source file is part of the Swift.org open source project
 //
@@ -32,15 +32,21 @@
 #define MISSING_SYNTAX(Id, Parent)
 #endif
 
+#ifndef SYNTAX_COLLECTION
+#define SYNTAX_COLLECTION(Id, Element)
+#endif
+
 SYNTAX(Unknown, Syntax)
 
 // Decls
 ABSTRACT_SYNTAX(DeclSyntax, Syntax)
-  MISSING_SYNTAX(MissingDecl, Decl)
+  MISSING_SYNTAX(MissingDecl, DeclSyntax)
+  SYNTAX(UnknownDecl, DeclSyntax)
   SYNTAX(StructDecl, DeclSyntax)
   SYNTAX(TypeAliasDecl, DeclSyntax)
+  SYNTAX(FunctionDecl, DeclSyntax)
 
-SYNTAX_RANGE(Decl, StructDecl, TypeAliasDecl)
+SYNTAX_RANGE(Decl, MissingDecl, FunctionDecl)
 
 SYNTAX(DeclMembers, Syntax)
 SYNTAX(GenericParameter, Syntax)
@@ -51,9 +57,9 @@ SYNTAX(GenericWhereClause, Syntax)
 SYNTAX(GenericRequirementList, Syntax)
 SYNTAX(GenericArgumentClause, Syntax)
 SYNTAX(GenericArgumentList, Syntax)
-SYNTAX(ConformanceRequirement, Syntax)
-SYNTAX(SameTypeRequirement, Syntax)
-SYNTAX(TypeArgumentList, Syntax)
+ABSTRACT_SYNTAX(GenericRequirementSyntax, Syntax)
+  SYNTAX(ConformanceRequirement, GenericRequirementSyntax)
+  SYNTAX(SameTypeRequirement, GenericRequirementSyntax)
 
 // Types
 ABSTRACT_SYNTAX(TypeSyntax, Syntax)
@@ -72,18 +78,40 @@ SYNTAX_RANGE(Type, MissingType, FunctionType)
 SYNTAX(StmtList, Syntax)
 
 ABSTRACT_SYNTAX(StmtSyntax, Syntax)
+  SYNTAX(UnknownStmt, StmtSyntax)
   SYNTAX(CodeBlockStmt, StmtSyntax)
   SYNTAX(FallthroughStmt, StmtSyntax)
   SYNTAX(BreakStmt, StmtSyntax)
   SYNTAX(ContinueStmt, StmtSyntax)
-SYNTAX_RANGE(Stmt, CodeBlockStmt, ContinueStmt)
+  SYNTAX(ReturnStmt, StmtSyntax)
+SYNTAX_RANGE(Stmt, UnknownStmt, ReturnStmt)
 
+// Expressions
+ABSTRACT_SYNTAX(ExprSyntax, Syntax)
+  MISSING_SYNTAX(MissingExpr, ExprSyntax)
+  SYNTAX(UnknownExpr, ExprSyntax)
+  SYNTAX(IntegerLiteralExpr, ExprSyntax)
+  SYNTAX(FunctionCallExpr, ExprSyntax)
+  SYNTAX(SymbolicReferenceExpr, ExprSyntax)
+SYNTAX_RANGE(Expr, MissingExpr, SymbolicReferenceExpr)
+
+// Other stuff
 SYNTAX(BalancedTokens, Syntax)
 SYNTAX(TypeAttribute, Syntax)
 SYNTAX(TypeAttributes, Syntax)
 SYNTAX(TupleTypeElement, Syntax)
 SYNTAX(FunctionTypeArgument, Syntax)
+SYNTAX(FunctionCallArgumentList, Syntax)
+SYNTAX(FunctionCallArgument, Syntax)
+SYNTAX(FunctionSignature, Syntax)
+SYNTAX(FunctionParameter, Syntax)
+SYNTAX(DeclModifier, Syntax)
+SYNTAX(DeclModifierList, Syntax)
 
+SYNTAX_COLLECTION(FunctionParameterList, FunctionParameterSyntax)
+SYNTAX_COLLECTION(TupleTypeElementList, TupleTypeElementSyntax)
+
+#undef SYNTAX_COLLECTION
 #undef ABSTRACT_SYNTAX
 #undef DECL
 #undef STMT

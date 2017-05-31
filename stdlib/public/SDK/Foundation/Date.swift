@@ -12,6 +12,7 @@
 
 @_exported import Foundation // Clang module
 import CoreFoundation
+import _SwiftCoreFoundationOverlayShims
 
 /**
  `Date` represents a single point in time.
@@ -281,5 +282,18 @@ extension Date : CustomPlaygroundQuickLookable {
     
     public var customPlaygroundQuickLook: PlaygroundQuickLook {
         return .text(summary)
+    }
+}
+
+extension Date : Codable {
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let timestamp = try container.decode(Double.self)
+        self.init(timeIntervalSinceReferenceDate: timestamp)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(self.timeIntervalSinceReferenceDate)
     }
 }

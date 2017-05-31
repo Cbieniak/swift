@@ -20,6 +20,7 @@
 #include "swift/AST/IRGenOptions.h"
 #include "swift/AST/PrettyStackTrace.h"
 #include "swift/AST/Types.h"
+#include "swift/IRGen/Linking.h"
 #include "swift/SIL/SILModule.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/ADT/SmallString.h"
@@ -38,12 +39,12 @@
 #include "GenOpaque.h"
 #include "HeapTypeInfo.h"
 #include "IndirectTypeInfo.h"
-#include "Linking.h"
 #include "ProtocolInfo.h"
 #include "ReferenceTypeInfo.h"
 #include "ScalarTypeInfo.h"
 #include "WeakTypeInfo.h"
 #include "NativeConventionSchema.h"
+#include "IRGenMangler.h"
 
 using namespace swift;
 using namespace irgen;
@@ -1371,7 +1372,7 @@ namespace {
         return false;
 
       for (auto elt : decl->getAllElements()) {
-        if (elt->getArgumentInterfaceType() &&
+        if (elt->hasAssociatedValues() &&
             !elt->isIndirect() &&
             visit(elt->getArgumentInterfaceType()->getCanonicalType()))
           return true;
@@ -1530,15 +1531,16 @@ llvm::StructType *IRGenModule::createNominalType(CanType type) {
   assert(type.getNominalOrBoundGenericNominal());
 
   // We share type infos for different instantiations of a generic type
-  // when the archetypes have the same exemplars.  Mangling the archetypes
-  // in this case can be very misleading, so we just mangle the base name.
+  // when the archetypes have the same exemplars.  We cannot mangle
+  // archetypes, and the mangling does not have to be unique, so we just
+  // mangle the unbound generic form of the type.
   if (type->hasArchetype())
     type = type.getNominalOrBoundGenericNominal()->getDeclaredType()
                                                  ->getCanonicalType();
 
-  llvm::SmallString<32> typeName;
-  LinkEntity::forTypeMangling(type).mangle(typeName);
-  return llvm::StructType::create(getLLVMContext(), typeName.str());
+  IRGenMangler Mangler;
+  std::string typeName = Mangler.mangleTypeForLLVMTypeName(type);
+  return llvm::StructType::create(getLLVMContext(), StringRef(typeName));
 }
 
 /// createNominalType - Create a new nominal LLVM type for the given
@@ -1548,20 +1550,9 @@ llvm::StructType *IRGenModule::createNominalType(CanType type) {
 /// distinguish different cases.
 llvm::StructType *
 IRGenModule::createNominalType(ProtocolCompositionType *type) {
-  llvm::SmallString<32> typeName;
-
-  SmallVector<ProtocolDecl *, 4> protocols;
-  type->getAnyExistentialTypeProtocols(protocols);
-  
-  if (protocols.empty()) {
-    typeName.append("Any");
-  } else {
-    for (unsigned i = 0, e = protocols.size(); i != e; ++i) {
-      if (i) typeName.push_back('&');
-      LinkEntity::forNonFunction(protocols[i]).mangle(typeName);
-    }
-  }
-  return llvm::StructType::create(getLLVMContext(), typeName.str());
+  IRGenMangler Mangler;
+  std::string typeName = Mangler.mangleProtocolForLLVMTypeName(type);
+  return llvm::StructType::create(getLLVMContext(), StringRef(typeName));
 }
 
 /// Compute the explosion schema for the given type.
@@ -1635,6 +1626,14 @@ bool IRGenModule::isPOD(SILType type, ResilienceExpansion expansion) {
   return getTypeInfo(type).isPOD(expansion);
 }
 
+/// Determine whether this type is known to be empty.
+bool IRGenModule::isKnownEmpty(SILType type, ResilienceExpansion expansion) {
+  if (auto tuple = type.getAs<TupleType>()) {
+    if (tuple->getNumElements() == 0)
+      return true;
+  }
+  return getTypeInfo(type).isKnownEmpty(expansion);
+}
 
 SpareBitVector IRGenModule::getSpareBitsForType(llvm::Type *scalarTy, Size size) {
   auto it = SpareBitsForTypes.find(scalarTy);
@@ -1774,7 +1773,7 @@ SILType irgen::getSingletonAggregateFieldType(IRGenModule &IGM, SILType t,
     
     auto theCase = allCases.begin();
     if (!allCases.empty() && std::next(theCase) == allCases.end()
-        && (*theCase)->getArgumentInterfaceType())
+        && (*theCase)->hasAssociatedValues())
       return t.getEnumElementType(*theCase, IGM.getSILModule());
 
     return SILType();

@@ -11,7 +11,11 @@
 //===----------------------------------------------------------------------===//
 
 import TestsUtils
+#if os(Linux)
+import Glibc
+#else
 import Darwin
+#endif
 
 func IsPowerOfTwo(_ x: Int) -> Bool { return (x & (x - 1)) == 0 }
 
@@ -58,9 +62,9 @@ func checkCorrectness() {
   InverseWalshTransform(&data)
   for i in 0..<In.count {
     // Check encode.
-    CheckResults(abs(data[i] - In[i]) < 0.0001, "Incorrect results in Walsh.")
+    CheckResults(abs(data[i] - In[i]) < 0.0001)
     // Check decode.
-    CheckResults(abs(mid[i] - Out[i]) < 0.0001, "Incorrect results in Walsh.")
+    CheckResults(abs(mid[i] - Out[i]) < 0.0001)
   }
 }
 

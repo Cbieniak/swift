@@ -28,7 +28,7 @@
 // CHECK:   (enum TypesToReflect.E)
 // CHECK:   (struct Swift.Int))
 
-// CHECK: aTupleWithLabels: (a : TypesToReflect.C, s : TypesToReflect.S, e : TypesToReflect.E)
+// CHECK: aTupleWithLabels: (a: TypesToReflect.C, s: TypesToReflect.S, e: TypesToReflect.E)
 // CHECK: (tuple
 // CHECK:   (class TypesToReflect.C)
 // CHECK:   (struct TypesToReflect.S)
@@ -46,7 +46,7 @@
 // CHECK:   (struct Swift.Int)
 // CHECK:   (struct Swift.Int))
 
-// CHECK: aFunctionWithVarArgs: (TypesToReflect.C, Swift.Array<TypesToReflect.S>...) -> ()
+// CHECK: aFunctionWithVarArgs: (TypesToReflect.C, TypesToReflect.S...) -> ()
 // CHECK: (function
 // CHECK:   (class TypesToReflect.C)
 // CHECK:   (bound_generic_struct Swift.Array
@@ -578,6 +578,14 @@
 // CHECK: -----------------
 // CHECK: TypesToReflect.ClassBoundP
 // CHECK: --------------------------
+
+// CHECK: TypesToReflect.(FileprivateProtocol in _{{[0-9A-F]+}})
+// CHECK: -------------------------------------------------------------------------
+
+// CHECK: TypesToReflect.HasFileprivateProtocol
+// CHECK: -------------------------------------
+// CHECK: x: TypesToReflect.(FileprivateProtocol in _{{[0-9A-F]+}})
+// CHECK: (protocol TypesToReflect.(FileprivateProtocol in _{{[0-9A-F]+}}))
 
 // CHECK: ASSOCIATED TYPES:
 // CHECK: =================

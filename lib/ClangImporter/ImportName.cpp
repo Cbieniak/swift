@@ -26,6 +26,7 @@
 #include "swift/AST/Module.h"
 #include "swift/AST/NameLookup.h"
 #include "swift/AST/Types.h"
+#include "swift/AST/TypeRepr.h"
 #include "swift/Basic/StringExtras.h"
 #include "swift/ClangImporter/ClangImporterOptions.h"
 #include "swift/Parse/Parser.h"
@@ -37,6 +38,7 @@
 #include "clang/Sema/Lookup.h"
 #include "clang/Sema/Sema.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/ErrorHandling.h"
 #include <algorithm>
 #include <memory>
 
@@ -67,6 +69,22 @@ importer::nameVersionFromOptions(const LangOptions &langOpts) {
     return ImportNameVersion::Swift4;
   }
 }
+
+unsigned importer::majorVersionNumberForNameVersion(ImportNameVersion version) {
+  switch (version) {
+  case ImportNameVersion::Raw:
+    return 0;
+  case ImportNameVersion::Swift2:
+    return 2;
+  case ImportNameVersion::Swift3:
+    return 3;
+  case ImportNameVersion::Swift4:
+    return 4;
+  }
+
+  llvm_unreachable("Unhandled ImportNameVersion in switch.");
+}
+
 
 /// Determine whether the given Clang selector matches the given
 /// selector pieces.
@@ -359,7 +377,7 @@ void ClangImporter::Implementation::printSwiftName(ImportedName name,
     printFullContextPrefix(name, os, *this);
 
   // Base name.
-  os << name.getDeclName().getBaseName().str();
+  os << name.getDeclName().getBaseName();
 
   // Determine the number of argument labels we'll be producing.
   auto argumentNames = name.getDeclName().getArgumentNames();
@@ -489,9 +507,7 @@ static bool moduleIsInferImportAsMember(const clang::NamedDecl *decl,
     if (submodule->IsSwiftInferImportAsMember) {
       // HACK HACK HACK: This is a workaround for some module invalidation issue
       // and inconsistency. This will go away soon.
-      if (submodule->Name != "CoreGraphics")
-        return false;
-      return true;
+      return submodule->Name == "CoreGraphics";
     }
     submodule = submodule->Parent;
   }
@@ -560,93 +576,47 @@ determineCtorInitializerKind(const clang::ObjCMethodDecl *method) {
   return None;
 }
 
-/// Determine whether the given class method should be imported as
-/// an initializer.
-static FactoryAsInitKind
-getFactoryAsInit(const clang::ObjCInterfaceDecl *classDecl,
-                 const clang::ObjCMethodDecl *method) {
-  if (auto *customNameAttr = method->getAttr<clang::SwiftNameAttr>()) {
-    if (customNameAttr->getName().startswith("init("))
-      return FactoryAsInitKind::AsInitializer;
-    else
-      return FactoryAsInitKind::AsClassMethod;
-  }
-
-  return FactoryAsInitKind::Infer;
+template <typename A>
+static bool matchesVersion(A *versionedAttr, ImportNameVersion version) {
+  clang::VersionTuple attrVersion = versionedAttr->getVersion();
+  if (attrVersion.empty())
+    return version == ImportNameVersion::LAST_VERSION;
+  return attrVersion.getMajor() == majorVersionNumberForNameVersion(version);
 }
 
-/// Determine whether this Objective-C method should be imported as
-/// an initializer.
-///
-/// \param prefixLength Will be set to the length of the prefix that
-/// should be stripped from the first selector piece, e.g., "init"
-/// or the restated name of the class in a factory method.
-///
-///  \param kind Will be set to the kind of initializer being
-///  imported. Note that this does not distinguish designated
-///  vs. convenience; both will be classified as "designated".
-static bool shouldImportAsInitializer(const clang::ObjCMethodDecl *method,
-                                      unsigned &prefixLength,
-                                      CtorInitializerKind &kind) {
-  /// Is this an initializer?
-  if (isInitMethod(method)) {
-    prefixLength = 4;
-    kind = CtorInitializerKind::Designated;
-    return true;
-  }
+const clang::SwiftNameAttr *
+importer::findSwiftNameAttr(const clang::Decl *decl,
+                            ImportNameVersion version) {
+  if (version == ImportNameVersion::Raw)
+    return nullptr;
 
-  // It must be a class method.
-  if (!method->isClassMethod()) return false;
+  // Handle versioned API notes for Swift 3 and later. This is the common case.
+  if (version != ImportNameVersion::Swift2) {
+    for (auto *attr : decl->attrs()) {
+      if (auto *versionedAttr = dyn_cast<clang::SwiftVersionedAttr>(attr)) {
+        if (!matchesVersion(versionedAttr, version))
+          continue;
+        if (auto *added =
+              dyn_cast<clang::SwiftNameAttr>(versionedAttr->getAttrToAdd())) {
+          return added;
+        }
+      }
 
-  // Said class methods must be in an actual class.
-  auto objcClass = method->getClassInterface();
-  if (!objcClass) return false;
-
-  // Check whether we should try to import this factory method as an
-  // initializer.
-  switch (getFactoryAsInit(objcClass, method)) {
-  case FactoryAsInitKind::AsInitializer:
-    // Okay; check for the correct result type below.
-    prefixLength = 0;
-    break;
-
-  case FactoryAsInitKind::Infer:
-    // See if we can match the class name to the beginning of the first
-    // selector piece.
-    if (auto matchedLength = matchFactoryAsInitName(method)) {
-      prefixLength = *matchedLength;
-      break;
+      if (auto *removeAttr = dyn_cast<clang::SwiftVersionedRemovalAttr>(attr)) {
+        if (!matchesVersion(removeAttr, version))
+          continue;
+        if (removeAttr->getAttrKindToRemove() == clang::attr::SwiftName)
+          return nullptr;
+      }
     }
 
-    return false;
-
-  case FactoryAsInitKind::AsClassMethod:
-    return false;
+    return decl->getAttr<clang::SwiftNameAttr>();
   }
 
-  // Determine what kind of initializer we're creating.
-  if (auto initKind = determineCtorInitializerKind(method)) {
-    kind = *initKind;
-    return true;
-  }
-
-  // Not imported as an initializer.
-  return false;
-}
-
-/// Find the swift_name attribute associated with this declaration, if
-/// any.
-///
-/// \param version The version we're importing the name as
-static clang::SwiftNameAttr *findSwiftNameAttr(const clang::Decl *decl,
-                                               ImportNameVersion version) {
-  // Find the attribute.
+  // The remainder of this function emulates the limited form of swift_name
+  // supported in Swift 2.
   auto attr = decl->getAttr<clang::SwiftNameAttr>();
   if (!attr) return nullptr;
-
-  // If we're not emulating the Swift 2 behavior, return what we got.
-  if (version != ImportNameVersion::Swift2)
-    return attr;
 
   // API notes produce implicit attributes; ignore them because they weren't
   // used for naming in Swift 2.
@@ -681,6 +651,82 @@ static clang::SwiftNameAttr *findSwiftNameAttr(const clang::Decl *decl,
   }
 
   return nullptr;
+}
+
+/// Determine whether the given class method should be imported as
+/// an initializer.
+static FactoryAsInitKind
+getFactoryAsInit(const clang::ObjCInterfaceDecl *classDecl,
+                 const clang::ObjCMethodDecl *method,
+                 ImportNameVersion version) {
+  if (auto *customNameAttr = findSwiftNameAttr(method, version)) {
+    if (customNameAttr->getName().startswith("init("))
+      return FactoryAsInitKind::AsInitializer;
+    else
+      return FactoryAsInitKind::AsClassMethod;
+  }
+
+  return FactoryAsInitKind::Infer;
+}
+
+/// Determine whether this Objective-C method should be imported as
+/// an initializer.
+///
+/// \param prefixLength Will be set to the length of the prefix that
+/// should be stripped from the first selector piece, e.g., "init"
+/// or the restated name of the class in a factory method.
+///
+///  \param kind Will be set to the kind of initializer being
+///  imported. Note that this does not distinguish designated
+///  vs. convenience; both will be classified as "designated".
+static bool shouldImportAsInitializer(const clang::ObjCMethodDecl *method,
+                                      ImportNameVersion version,
+                                      unsigned &prefixLength,
+                                      CtorInitializerKind &kind) {
+  /// Is this an initializer?
+  if (isInitMethod(method)) {
+    prefixLength = 4;
+    kind = CtorInitializerKind::Designated;
+    return true;
+  }
+
+  // It must be a class method.
+  if (!method->isClassMethod()) return false;
+
+  // Said class methods must be in an actual class.
+  auto objcClass = method->getClassInterface();
+  if (!objcClass) return false;
+
+  // Check whether we should try to import this factory method as an
+  // initializer.
+  switch (getFactoryAsInit(objcClass, method, version)) {
+  case FactoryAsInitKind::AsInitializer:
+    // Okay; check for the correct result type below.
+    prefixLength = 0;
+    break;
+
+  case FactoryAsInitKind::Infer:
+    // See if we can match the class name to the beginning of the first
+    // selector piece.
+    if (auto matchedLength = matchFactoryAsInitName(method)) {
+      prefixLength = *matchedLength;
+      break;
+    }
+
+    return false;
+
+  case FactoryAsInitKind::AsClassMethod:
+    return false;
+  }
+
+  // Determine what kind of initializer we're creating.
+  if (auto initKind = determineCtorInitializerKind(method)) {
+    kind = *initKind;
+    return true;
+  }
+
+  // Not imported as an initializer.
+  return false;
 }
 
 /// Attempt to omit needless words from the given function name.
@@ -788,9 +834,11 @@ NameImporter::determineEffectiveContext(const clang::NamedDecl *decl,
     case EnumKind::Enum:
     case EnumKind::Options:
       // Enums are mapped to Swift enums, Options to Swift option sets.
-      res = cast<clang::DeclContext>(enumDecl);
-      break;
-
+      if (version != ImportNameVersion::Raw) {
+        res = cast<clang::DeclContext>(enumDecl);
+        break;
+      }
+      LLVM_FALLTHROUGH;
     case EnumKind::Constants:
     case EnumKind::Unknown:
       // The enum constant goes into the redeclaration context of the
@@ -889,9 +937,9 @@ bool NameImporter::hasNamingConflict(const clang::NamedDecl *decl,
   return false;
 }
 
-bool NameImporter::shouldBeSwiftPrivate(const clang::NamedDecl *decl,
-                                        clang::Sema &clangSema) {
-
+static bool shouldBeSwiftPrivate(NameImporter &nameImporter,
+                                 const clang::NamedDecl *decl,
+                                 ImportNameVersion version) {
   // Decl with the attribute are obviously private
   if (decl->hasAttr<clang::SwiftPrivateAttr>())
     return true;
@@ -900,7 +948,12 @@ bool NameImporter::shouldBeSwiftPrivate(const clang::NamedDecl *decl,
   // private if the parent enum is marked private.
   if (auto *ECD = dyn_cast<clang::EnumConstantDecl>(decl)) {
     auto *ED = cast<clang::EnumDecl>(ECD->getDeclContext());
-    switch (getEnumKind(ED)) {
+    switch (nameImporter.getEnumKind(ED)) {
+    case EnumKind::Enum:
+    case EnumKind::Options:
+      if (version != ImportNameVersion::Raw)
+        break;
+      LLVM_FALLTHROUGH;
     case EnumKind::Constants:
     case EnumKind::Unknown:
       if (ED->hasAttr<clang::SwiftPrivateAttr>())
@@ -908,10 +961,6 @@ bool NameImporter::shouldBeSwiftPrivate(const clang::NamedDecl *decl,
       if (auto *enumTypedef = ED->getTypedefNameForAnonDecl())
         if (enumTypedef->hasAttr<clang::SwiftPrivateAttr>())
           return true;
-      break;
-
-    case EnumKind::Enum:
-    case EnumKind::Options:
       break;
     }
   }
@@ -1179,7 +1228,7 @@ ImportedName NameImporter::importNameImpl(const clang::NamedDecl *D,
     if (method) {
       unsigned initPrefixLength;
       if (parsedName.BaseName == "init" && parsedName.IsFunctionName) {
-        if (!shouldImportAsInitializer(method, initPrefixLength,
+        if (!shouldImportAsInitializer(method, version, initPrefixLength,
                                        result.info.initKind)) {
           // We cannot import this as an initializer anyway.
           return ImportedName();
@@ -1354,7 +1403,8 @@ ImportedName NameImporter::importNameImpl(const clang::NamedDecl *D,
     if (baseName.empty())
       return ImportedName();
 
-    isInitializer = shouldImportAsInitializer(objcMethod, initializerPrefixLen,
+    isInitializer = shouldImportAsInitializer(objcMethod, version,
+                                              initializerPrefixLen,
                                               result.info.initKind);
 
     // If we would import a factory method as an initializer but were
@@ -1456,7 +1506,7 @@ ImportedName NameImporter::importNameImpl(const clang::NamedDecl *D,
 
   // Enumeration constants may have common prefixes stripped.
   bool strippedPrefix = false;
-  if (isa<clang::EnumConstantDecl>(D)) {
+  if (version != ImportNameVersion::Raw && isa<clang::EnumConstantDecl>(D)) {
     auto enumDecl = cast<clang::EnumDecl>(D->getDeclContext());
     auto enumInfo = getEnumInfo(enumDecl);
 
@@ -1469,7 +1519,7 @@ ImportedName NameImporter::importNameImpl(const clang::NamedDecl *D,
         // Calculate the new prefix.
         // What if the preferred name causes longer prefix?
         StringRef subPrefix = [](StringRef LHS, StringRef RHS) {
-          if(LHS.size() > RHS.size())
+          if (LHS.size() > RHS.size())
             std::swap(LHS, RHS) ;
           return StringRef(LHS.data(), std::mismatch(LHS.begin(), LHS.end(),
             RHS.begin()).first - LHS.begin());
@@ -1578,7 +1628,7 @@ ImportedName NameImporter::importNameImpl(const clang::NamedDecl *D,
   // If this declaration has the swift_private attribute, prepend "__" to the
   // appropriate place.
   SmallString<16> swiftPrivateScratch;
-  if (shouldBeSwiftPrivate(D, clangSema)) {
+  if (shouldBeSwiftPrivate(*this, D, version)) {
     // Special case: empty arg factory, "for historical reasons", is not private
     if (isInitializer && argumentNames.empty() &&
         (result.getInitKind() == CtorInitializerKind::Factory ||

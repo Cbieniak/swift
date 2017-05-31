@@ -1,4 +1,4 @@
-//===- SILFunctionConventions.h - Defines SILFunctioConventions -*- C++ -*-===//
+//===- SILFunctionConventions.h - Defines SIL func. conventions -*- C++ -*-===//
 //
 // This source file is part of the Swift.org open source project
 //
@@ -148,6 +148,12 @@ public:
   /// Get the error result type.
   SILType getSILErrorType() { return getSILType(funcTy->getErrorResult()); }
 
+  /// Returns an array of result info.
+  /// Provides convenient access to the underlying SILFunctionType.
+  ArrayRef<SILResultInfo> getResults() const {
+    return funcTy->getResults();
+  }
+
   /// Get the number of SIL results passed as address-typed arguments.
   unsigned getNumIndirectSILResults() const {
     return silConv.loweredAddresses ? funcTy->getNumIndirectFormalResults() : 0;
@@ -243,7 +249,7 @@ public:
   /// SILFunctionType.
   unsigned getNumParameters() const { return funcTy->getNumParameters(); }
 
-  /// Returns an array if parameter info, not including indirect
+  /// Returns an array of parameter info, not including indirect
   /// results. Provides convenient access to the underlying SILFunctionType.
   ArrayRef<SILParameterInfo> getParameters() const {
     return funcTy->getParameters();
@@ -346,8 +352,10 @@ inline bool SILModuleConventions::isIndirectSILParam(SILParameterInfo param,
     return false;
 
   case ParameterConvention::Indirect_In:
+  case ParameterConvention::Indirect_In_Constant:
   case ParameterConvention::Indirect_In_Guaranteed:
-    return loweredAddresses;
+    return (loweredAddresses ||
+            param.getType()->isOpenedExistentialWithError());
   case ParameterConvention::Indirect_Inout:
   case ParameterConvention::Indirect_InoutAliasable:
     return true;
@@ -359,7 +367,8 @@ inline bool SILModuleConventions::isIndirectSILResult(SILResultInfo result,
                                                       bool loweredAddresses) {
   switch (result.getConvention()) {
   case ResultConvention::Indirect:
-    return loweredAddresses;
+    return (loweredAddresses ||
+            result.getType()->isOpenedExistentialWithError());
   case ResultConvention::Owned:
   case ResultConvention::Unowned:
   case ResultConvention::UnownedInnerPointer:

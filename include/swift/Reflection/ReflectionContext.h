@@ -65,6 +65,11 @@ public:
     return *this->Reader;
   }
 
+  unsigned getSizeOfHeapObject() {
+    // This must match sizeof(HeapObject) for the target.
+    return sizeof(StoredPointer) + 8;
+  }
+
   void dumpAllSections(std::ostream &OS) {
     getBuilder().dumpAllSections();
   }
@@ -239,7 +244,16 @@ public:
         if (!getReader().readInteger(ExistentialAddress, &BoxAddress))
           return false;
 
+#ifdef SWIFT_RUNTIME_ENABLE_COW_EXISTENTIALS
+        // Address = BoxAddress + (sizeof(HeapObject) + alignMask) & ~alignMask)
+        auto Alignment = InstanceTI->getAlignment();
+        auto StartOfValue = BoxAddress + getSizeOfHeapObject();
+        // Align.
+        StartOfValue += Alignment - StartOfValue % Alignment;
+        *OutInstanceAddress = RemoteAddress(StartOfValue);
+#else
         *OutInstanceAddress = RemoteAddress(BoxAddress);
+#endif
       }
       return true;
     }
@@ -362,6 +376,11 @@ private:
     // solve the problem.
     while (!CaptureTypes.empty()) {
       const TypeRef *OrigCaptureTR = CaptureTypes[0];
+
+      // If we failed to demangle the capture type, we cannot proceed.
+      if (OrigCaptureTR == nullptr)
+        return nullptr;
+
       const TypeRef *SubstCaptureTR = nullptr;
 
       // If we have enough substitutions to make this captured value's
@@ -481,7 +500,7 @@ private:
       // the heap object header, in the 'necessary bindings' area.
       //
       // We should only have the index of a type metadata record here.
-      unsigned Offset = sizeof(StoredPointer) + 8 +
+      unsigned Offset = getSizeOfHeapObject() +
                         sizeof(StoredPointer) * Index;
 
       StoredPointer MetadataAddress;

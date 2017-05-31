@@ -1,6 +1,6 @@
 // RUN: rm -rf %t && mkdir -p %t
 // RUN: %build-irgen-test-overlays
-// RUN: %target-swift-frontend(mock-sdk: -sdk %S/Inputs -I %t) -Xllvm -new-mangling-for-tests -primary-file %s -emit-ir -disable-objc-attr-requires-foundation-module | %FileCheck %s
+// RUN: %target-swift-frontend(mock-sdk: -sdk %S/Inputs -I %t) -primary-file %s -emit-ir -disable-objc-attr-requires-foundation-module | %FileCheck %s
 
 // REQUIRES: CPU=x86_64
 // REQUIRES: objc_interop
@@ -9,14 +9,14 @@ import Foundation
 import gizmo
 
 // CHECK: [[TYPE:%swift.type]] = type
-// CHECK: [[BLAMMO:%C4objc6Blammo]] = type
-// CHECK: [[MYBLAMMO:%C4objc8MyBlammo]] = type
-// CHECK: [[TEST2:%C4objc5Test2]] = type
+// CHECK: [[BLAMMO:%T4objc6BlammoC]] = type
+// CHECK: [[MYBLAMMO:%T4objc8MyBlammoC]] = type
+// CHECK: [[TEST2:%T4objc5Test2C]] = type
 // CHECK: [[OBJC:%objc_object]] = type
-// CHECK: [[ID:%V4objc2id]] = type <{ %Ps9AnyObject_ }>
-// CHECK: [[GIZMO:%CSo5Gizmo]] = type
-// CHECK: [[RECT:%VSC4Rect]] = type
-// CHECK: [[FLOAT:%Sf]] = type
+// CHECK: [[ID:%T4objc2idV]] = type <{ %AnyObject }>
+// CHECK: [[GIZMO:%TSo5GizmoC]] = type
+// CHECK: [[RECT:%TSC4RectV]] = type
+// CHECK: [[FLOAT:%TSf]] = type
 
 // CHECK: @"\01L_selector_data(bar)" = private global [4 x i8] c"bar\00", section "__TEXT,__objc_methname,cstring_literals", align 1
 // CHECK: @"\01L_selector(bar)" = private externally_initialized global i8* getelementptr inbounds ([4 x i8], [4 x i8]* @"\01L_selector_data(bar)", i64 0, i64 0), section "__DATA,__objc_selrefs,literal_pointers,no_dead_strip", align 8
@@ -142,6 +142,6 @@ class WeakObjC {
 // CHECK:  i32 1, !"Objective-C Version", i32 2}
 // CHECK:  i32 1, !"Objective-C Image Info Version", i32 0}
 // CHECK:  i32 1, !"Objective-C Image Info Section", !"__DATA, __objc_imageinfo, regular, no_dead_strip"}
-//   512 == (2 << 8).  2 is the Swift ABI version.
-// CHECK:  i32 4, !"Objective-C Garbage Collection", i32 1024}
-// CHECK:  i32 1, !"Swift Version", i32 4}
+//   1280 == (5 << 8).  5 is the Swift ABI version.
+// CHECK:  i32 4, !"Objective-C Garbage Collection", i32 1280}
+// CHECK:  i32 1, !"Swift Version", i32 5}

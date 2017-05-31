@@ -36,7 +36,7 @@ using namespace swift;
 using llvm::StringRef;
 
 enum class ActionType {
-  DumpTokenSyntaxs,
+  DumpTokenSyntax,
   FullLexRoundTrip,
   FullParseRoundTrip,
   None
@@ -47,7 +47,7 @@ static llvm::cl::opt<ActionType>
 Action(llvm::cl::desc("Action (required):"),
        llvm::cl::init(ActionType::None),
        llvm::cl::values(
-        clEnumValN(ActionType::DumpTokenSyntaxs,
+        clEnumValN(ActionType::DumpTokenSyntax,
                    "dump-full-tokens",
                    "Lex the source file and dump the tokens "
                    "and their absolute line/column locations"),
@@ -69,7 +69,7 @@ int getTokensFromFile(unsigned BufferID,
                       LangOptions &LangOpts,
                       SourceManager &SourceMgr,
                       DiagnosticEngine &Diags,
-                      std::vector<std::pair<syntax::RC<syntax::TokenSyntax>,
+                      std::vector<std::pair<RC<syntax::TokenSyntax>,
                       syntax::AbsolutePosition>> &Tokens) {
   Tokens = tokenizeWithTrivia(LangOpts, SourceMgr, BufferID);
   return Diags.hadAnyError() ? EXIT_FAILURE : EXIT_SUCCESS;
@@ -81,7 +81,7 @@ getTokensFromFile(const StringRef InputFilename,
                   LangOptions &LangOpts,
                   SourceManager &SourceMgr,
                   DiagnosticEngine &Diags,
-                  std::vector<std::pair<syntax::RC<syntax::TokenSyntax>,
+                  std::vector<std::pair<RC<syntax::TokenSyntax>,
                                         syntax::AbsolutePosition>> &Tokens) {
   auto Buffer = llvm::MemoryBuffer::getFile(InputFilename);
   if (!Buffer) {
@@ -101,7 +101,7 @@ int doFullLexRoundTrip(const StringRef InputFilename) {
   PrintingDiagnosticConsumer DiagPrinter;
   Diags.addConsumer(DiagPrinter);
 
-  std::vector<std::pair<syntax::RC<syntax::TokenSyntax>,
+  std::vector<std::pair<RC<syntax::TokenSyntax>,
                                    syntax::AbsolutePosition>> Tokens;
   if (getTokensFromFile(InputFilename, LangOpts, SourceMgr,
                         Diags, Tokens) == EXIT_FAILURE) {
@@ -123,7 +123,7 @@ int doDumpTokenSyntax(const StringRef InputFilename) {
   Diags.addConsumer(DiagPrinter);
 
 
-  std::vector<std::pair<syntax::RC<syntax::TokenSyntax>,
+  std::vector<std::pair<RC<syntax::TokenSyntax>,
                         syntax::AbsolutePosition>> Tokens;
   if (getTokensFromFile(InputFilename, LangOpts, SourceMgr,
                         Diags, Tokens) == EXIT_FAILURE) {
@@ -172,7 +172,7 @@ int doFullParseRoundTrip(const StringRef InputFilename) {
   assert(SF && "No source file");
 
   // Retokenize the buffer with full fidelity
-  std::vector<std::pair<syntax::RC<syntax::TokenSyntax>,
+  std::vector<std::pair<RC<syntax::TokenSyntax>,
                         syntax::AbsolutePosition>> Tokens;
   if (getTokensFromFile(BufferID, Invocation.getLangOptions(),
                         SourceMgr,
@@ -220,7 +220,7 @@ int main(int argc, char *argv[]) {
   }
 
   switch (options::Action) {
-  case ActionType::DumpTokenSyntaxs:
+  case ActionType::DumpTokenSyntax:
     ExitCode = doDumpTokenSyntax(options::InputSourceFilename);
     break;
   case ActionType::FullLexRoundTrip:

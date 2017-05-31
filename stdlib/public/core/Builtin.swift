@@ -114,27 +114,47 @@ public func unsafeBitCast<T, U>(_ x: T, to type: U.Type) -> U {
   return Builtin.reinterpretCast(x)
 }
 
+/// Returns `x` as its concrete type `U`.
+///
+/// This cast can be useful for dispatching to specializations of generic
+/// functions.
+///
+/// - Requires: `x` has type `U`.
+@_transparent
+public func _identityCast<T, U>(_ x: T, to expectedType: U.Type) -> U {
+  _precondition(T.self == expectedType, "_identityCast to wrong type")
+  return Builtin.reinterpretCast(x)
+}
+
 /// `unsafeBitCast` something to `AnyObject`.
 @_transparent
 internal func _reinterpretCastToAnyObject<T>(_ x: T) -> AnyObject {
   return unsafeBitCast(x, to: AnyObject.self)
 }
 
+@_inlineable
+@_versioned
 @_transparent
 func == (lhs: Builtin.NativeObject, rhs: Builtin.NativeObject) -> Bool {
   return unsafeBitCast(lhs, to: Int.self) == unsafeBitCast(rhs, to: Int.self)
 }
 
+@_inlineable
+@_versioned
 @_transparent
 func != (lhs: Builtin.NativeObject, rhs: Builtin.NativeObject) -> Bool {
   return !(lhs == rhs)
 }
 
+@_inlineable
+@_versioned
 @_transparent
 func == (lhs: Builtin.RawPointer, rhs: Builtin.RawPointer) -> Bool {
   return unsafeBitCast(lhs, to: Int.self) == unsafeBitCast(rhs, to: Int.self)
 }
 
+@_inlineable
+@_versioned
 @_transparent
 func != (lhs: Builtin.RawPointer, rhs: Builtin.RawPointer) -> Bool {
   return !(lhs == rhs)
@@ -142,12 +162,19 @@ func != (lhs: Builtin.RawPointer, rhs: Builtin.RawPointer) -> Bool {
 
 /// Returns `true` iff `t0` is identical to `t1`; i.e. if they are both
 /// `nil` or they both represent the same type.
+@_inlineable
 public func == (t0: Any.Type?, t1: Any.Type?) -> Bool {
-  return unsafeBitCast(t0, to: Int.self) == unsafeBitCast(t1, to: Int.self)
+  switch (t0, t1) {
+  case (.none, .none): return true
+  case let (.some(ty0), .some(ty1)):
+    return Bool(Builtin.is_same_metatype(ty0, ty1))
+  default: return false
+  }
 }
 
 /// Returns `false` iff `t0` is identical to `t1`; i.e. if they are both
 /// `nil` or they both represent the same type.
+@_inlineable
 public func != (t0: Any.Type?, t1: Any.Type?) -> Bool {
   return !(t0 == t1)
 }
@@ -807,12 +834,13 @@ public func type<T, Metatype>(of value: T) -> Metatype {
 ///   behavior for the escapable closure to be stored, referenced, or executed
 ///   after the function returns.
 ///
-/// - Parameter closure: A non-escaping closure value that will be made
-///   escapable for the duration of the execution of the `body` closure. If
-///   `body` has a return value, it is used as the return value for the
-///   `withoutActuallyEscaping(_:do:)` function.
-/// - Parameter body: A closure that will be immediately executed, receiving an
-///   escapable copy of `closure` as an argument.
+/// - Parameters:
+///   - closure: A non-escaping closure value that will be made escapable for
+///     the duration of the execution of the `body` closure. If `body` has a
+///     return value, it is used as the return value for the
+///     `withoutActuallyEscaping(_:do:)` function.
+///   - body: A closure that will be immediately executed, receiving an
+///     escapable copy of `closure` as an argument.
 /// - Returns: The return value of the `body` closure, if any.
 @_transparent
 @_semantics("typechecker.withoutActuallyEscaping(_:do:)")
@@ -825,6 +853,21 @@ public func withoutActuallyEscaping<ClosureType, ResultType>(
   // the type checker.
   Builtin.staticReport(_trueAfterDiagnostics(), true._value,
     ("internal consistency error: 'withoutActuallyEscaping(_:do:)' operation failed to resolve"
+     as StaticString).utf8Start._rawValue)
+  Builtin.unreachable()
+}
+
+@_transparent
+@_semantics("typechecker._openExistential(_:do:)")
+public func _openExistential<ExistentialType, ContainedType, ResultType>(
+  _ existential: ExistentialType,
+  do body: (_ escapingClosure: ContainedType) throws -> ResultType
+) rethrows -> ResultType {
+  // This implementation is never used, since calls to
+  // `Swift._openExistential(_:do:)` are resolved as a special case by
+  // the type checker.
+  Builtin.staticReport(_trueAfterDiagnostics(), true._value,
+    ("internal consistency error: '_openExistential(_:do:)' operation failed to resolve"
      as StaticString).utf8Start._rawValue)
   Builtin.unreachable()
 }

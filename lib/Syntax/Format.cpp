@@ -1,4 +1,4 @@
-//===--- Format.cpp - Declaration Syntax Formatting Impl. -------*- C++ -*-===//
+//===--- Format.cpp - Declaration Syntax Formatting Impl. -----------------===//
 //
 // This source file is part of the Swift.org open source project
 //
@@ -12,6 +12,7 @@
 
 #include "swift/Syntax/Format.h"
 #include "swift/Syntax/DeclSyntax.h"
+#include "swift/Syntax/ExprSyntax.h"
 
 using namespace swift;
 using namespace swift::syntax;

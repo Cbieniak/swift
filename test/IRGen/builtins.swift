@@ -1,4 +1,4 @@
-// RUN: %target-swift-frontend -Xllvm -new-mangling-for-tests -assume-parsing-unqualified-ownership-sil -parse-stdlib -primary-file %s -emit-ir -o - -disable-objc-attr-requires-foundation-module | %FileCheck %s --check-prefix=CHECK --check-prefix=CHECK-%target-runtime
+// RUN: %target-swift-frontend -assume-parsing-unqualified-ownership-sil -parse-stdlib -primary-file %s -emit-ir -o - -disable-objc-attr-requires-foundation-module | %FileCheck %s --check-prefix=CHECK --check-prefix=CHECK-%target-runtime
 // REQUIRES: executable_test
 
 // REQUIRES: CPU=x86_64
@@ -6,8 +6,8 @@
 import Swift
 
 // CHECK-DAG: [[REFCOUNT:%swift.refcounted.*]] = type
-// CHECK-DAG: [[X:%C8builtins1X]] = type
-// CHECK-DAG: [[Y:%C8builtins1Y]] = type
+// CHECK-DAG: [[X:%T8builtins1XC]] = type
+// CHECK-DAG: [[Y:%T8builtins1YC]] = type
 
 typealias Int = Builtin.Int32
 typealias Bool = Builtin.Int1
@@ -378,7 +378,7 @@ func testCondFail(_ b: Bool, c: Bool) {
 // CHECK-objc:    [[IS_DONE:%.*]] = icmp eq [[WORD]] [[PRED]], -1
 // CHECK-objc:    br i1 [[IS_DONE]], label %[[DONE:.*]], label %[[NOT_DONE:.*]]
 // CHECK-objc:  [[NOT_DONE]]:
-// CHECK:         call void @swift_once([[WORD]]* [[PRED_PTR]], i8* %1)
+// CHECK:         call void @swift_once([[WORD]]* [[PRED_PTR]], i8* %1, i8* undef)
 // CHECK-objc:    br label %[[DONE]]
 // CHECK-objc:  [[DONE]]:
 // CHECK-objc:    [[PRED:%.*]] = load {{.*}} [[WORD]]* [[PRED_PTR]]
@@ -387,6 +387,22 @@ func testCondFail(_ b: Bool, c: Bool) {
 
 func testOnce(_ p: Builtin.RawPointer, f: @escaping @convention(thin) () -> ()) {
   Builtin.once(p, f)
+}
+
+// CHECK-LABEL: define hidden {{.*}}void @_T08builtins19testOnceWithContext{{[_0-9a-zA-Z]*}}F(i8*, i8*, i8*) {{.*}} {
+// CHECK:         [[PRED_PTR:%.*]] = bitcast i8* %0 to [[WORD:i64|i32]]*
+// CHECK-objc:    [[PRED:%.*]] = load {{.*}} [[WORD]]* [[PRED_PTR]]
+// CHECK-objc:    [[IS_DONE:%.*]] = icmp eq [[WORD]] [[PRED]], -1
+// CHECK-objc:    br i1 [[IS_DONE]], label %[[DONE:.*]], label %[[NOT_DONE:.*]]
+// CHECK-objc:  [[NOT_DONE]]:
+// CHECK:         call void @swift_once([[WORD]]* [[PRED_PTR]], i8* %1, i8* %2)
+// CHECK-objc:    br label %[[DONE]]
+// CHECK-objc:  [[DONE]]:
+// CHECK-objc:    [[PRED:%.*]] = load {{.*}} [[WORD]]* [[PRED_PTR]]
+// CHECK-objc:    [[IS_DONE:%.*]] = icmp eq [[WORD]] [[PRED]], -1
+// CHECK-objc:    call void @llvm.assume(i1 [[IS_DONE]])
+func testOnceWithContext(_ p: Builtin.RawPointer, f: @escaping @convention(thin) (Builtin.RawPointer) -> (), k: Builtin.RawPointer) {
+  Builtin.onceWithContext(p, f, k)
 }
 
 class C {}
@@ -727,6 +743,14 @@ func ispod_test() {
   // CHECK: store i1 false, i1*
   var t = Builtin.ispod(Int.self)
   var f = Builtin.ispod(Builtin.NativeObject)
+}
+
+// CHECK-LABEL: define {{.*}} @{{.*}}is_same_metatype
+func is_same_metatype_test(_ t1: Any.Type, _ t2: Any.Type) {
+  // CHECK: [[MT1_AS_PTR:%.*]] = bitcast %swift.type* %0 to i8*
+  // CHECK: [[MT2_AS_PTR:%.*]] = bitcast %swift.type* %1 to i8*
+  // CHECK: icmp eq i8* [[MT1_AS_PTR]], [[MT2_AS_PTR]]
+  var t = Builtin.is_same_metatype(t1, t2)
 }
 
 // CHECK-LABEL: define {{.*}} @{{.*}}generic_unsafeGuaranteed_test

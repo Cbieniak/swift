@@ -1,4 +1,4 @@
-//===--- LegacyASTTransformer.cpp - Swift lib/AST -> lib/Syntax -*- C++ -*-===//
+//===--- LegacyASTTransformer.cpp - Swift lib/AST -> lib/Syntax -----------===//
 //
 // This source file is part of the Swift.org open source project
 //
@@ -10,14 +10,15 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "swift/AST/AST.h"
 #include "swift/Syntax/DeclSyntax.h"
+#include "swift/Syntax/ExprSyntax.h"
 #include "swift/Syntax/GenericSyntax.h"
 #include "swift/Syntax/LegacyASTTransformer.h"
 #include "swift/Syntax/References.h"
 #include "swift/Syntax/StmtSyntax.h"
 #include "swift/Syntax/SyntaxFactory.h"
 #include "swift/Syntax/TokenSyntax.h"
+#include "swift/Syntax/UnknownSyntax.h"
 
 using namespace swift;
 using namespace swift::syntax;
@@ -61,14 +62,14 @@ namespace {
 
     std::vector<RC<TokenSyntax>> TokensInRange;
 
-    while(Start < End.base()) {
+    while (Start < End.base()) {
       TokensInRange.push_back(Start->first);
       ++Start;
     }
 
     return TokensInRange;
   }
-}
+} // anonymous namespace
 
 Optional<Syntax>
 syntax::transformAST(ASTNode Node,
@@ -153,20 +154,45 @@ RC<SyntaxData> LegacyASTTransformer::getUnknownSyntax(SourceRange SR) {
 }
 
 RC<SyntaxData> LegacyASTTransformer::getUnknownDecl(Decl *D) {
-  auto StartLoc = getStartLocForDecl(D);
-  auto EndLoc = getEndLocForDecl(D);
-  return getUnknownSyntax({StartLoc, EndLoc});
+  SourceRange SR {getStartLocForDecl(D),getEndLocForDecl(D)};
+  auto ComprisingTokens = getTokenSyntaxsInRange(SR, SourceMgr,
+                                                 BufferID, Tokens);
+  RawSyntax::LayoutList Layout;
+  std::copy(ComprisingTokens.begin(),
+            ComprisingTokens.end(),
+            std::back_inserter(Layout));
+  auto Raw = RawSyntax::make(SyntaxKind::UnknownExpr,
+                             Layout,
+                             SourcePresence::Present);
+  return UnknownDeclSyntaxData::make(Raw);
 }
 
 RC<SyntaxData> LegacyASTTransformer::getUnknownStmt(Stmt *S) {
-  auto EndLoc = getEndLocForStmt(S);
-
-  return getUnknownSyntax({S->getStartLoc(), EndLoc});
+  SourceRange SR { S->getStartLoc(), getEndLocForStmt(S) };
+  auto ComprisingTokens = getTokenSyntaxsInRange(SR, SourceMgr,
+                                                 BufferID, Tokens);
+  RawSyntax::LayoutList Layout;
+  std::copy(ComprisingTokens.begin(),
+            ComprisingTokens.end(),
+            std::back_inserter(Layout));
+  auto Raw = RawSyntax::make(SyntaxKind::UnknownExpr,
+                             Layout,
+                             SourcePresence::Present);
+  return UnknownStmtSyntaxData::make(Raw);
 }
 
 RC<SyntaxData> LegacyASTTransformer::getUnknownExpr(Expr *E) {
-  auto EndLoc = getEndLocForExpr(E);
-  return getUnknownSyntax({E->getStartLoc(), EndLoc});
+  SourceRange SR { E->getStartLoc(), getEndLocForExpr(E) };
+  auto ComprisingTokens = getTokenSyntaxsInRange(SR, SourceMgr,
+                                                 BufferID, Tokens);
+  RawSyntax::LayoutList Layout;
+  std::copy(ComprisingTokens.begin(),
+            ComprisingTokens.end(),
+            std::back_inserter(Layout));
+  auto Raw = RawSyntax::make(SyntaxKind::UnknownExpr,
+                             Layout,
+                             SourcePresence::Present);
+  return UnknownExprSyntaxData::make(Raw);
 }
 
 #pragma mark - Declarations
@@ -252,6 +278,15 @@ LegacyASTTransformer::visitPostfixOperatorDecl(
   return getUnknownDecl(D);
 }
 
+
+RC<SyntaxData>
+LegacyASTTransformer::visitMissingMemberDecl(
+    MissingMemberDecl *D,
+    const SyntaxData *Parent,
+    const CursorIndex IndexInParent) {
+  return getUnknownDecl(D);
+}
+
 RC<SyntaxData>
 LegacyASTTransformer::visitGenericTypeParamDecl(
     GenericTypeParamDecl *D,
@@ -286,7 +321,8 @@ LegacyASTTransformer::visitStructDecl(StructDecl *D,
                                       const CursorIndex IndexInParent) {
   return getUnknownDecl(D);
 
-/* TODO
+// TODO
+#if 0
   StructDeclSyntaxBuilder StructBuilder;
   if (D->getStartLoc().isValid()) {
     auto StructKeyword = findTokenSyntax(tok::kw_struct, "struct", SourceMgr,
@@ -296,8 +332,7 @@ LegacyASTTransformer::visitStructDecl(StructDecl *D,
   
   if (D->getNameLoc().isValid()) {
     auto Identifier = findTokenSyntax(tok::identifier,
-                                    OwnedString(D->getName().str(),
-                                                StringOwnership::Unowned),
+                                    OwnedString(D->getName().str()),
                                     SourceMgr, D->getNameLoc(), BufferID,
                                     Tokens);
     StructBuilder.useIdentifier(Identifier);
@@ -332,7 +367,7 @@ LegacyASTTransformer::visitStructDecl(StructDecl *D,
   StructBuilder.useMembers(MemberBuilder.build());
 
   return StructBuilder.build().Root;
-*/
+#endif
 }
 
 RC<SyntaxData>
@@ -416,11 +451,11 @@ LegacyASTTransformer::visitBraceStmt(BraceStmt *S,
                     BufferID, Tokens)
     : TokenSyntax::missingToken(tok::l_brace, "{");
 
-  StmtListSyntaxBuilder StmtsBuilder;
+  std::vector<StmtSyntax> Stmts;
   for (auto Node : S->getElements()) {
     auto Transformed = transformAST(Node, Sema, SourceMgr, BufferID, Tokens);
     if (Transformed.hasValue()) {
-      StmtsBuilder.addStatement(Transformed.getValue());
+      Stmts.push_back(Transformed.getValue().castTo<StmtSyntax>());
     }
   }
 
@@ -429,15 +464,26 @@ LegacyASTTransformer::visitBraceStmt(BraceStmt *S,
                     BufferID, Tokens)
     : TokenSyntax::missingToken(tok::r_brace, "}");
 
-  return SyntaxFactory::makeCodeBlock(LeftBrace, StmtsBuilder.build(),
-                                      RightBrace).Root;
+  auto StmtList = SyntaxFactory::makeStmtList(Stmts);
+
+  return SyntaxFactory::makeCodeBlock(LeftBrace, StmtList, RightBrace).Root;
 }
 
 RC<SyntaxData>
 LegacyASTTransformer::visitReturnStmt(ReturnStmt *S,
                                       const SyntaxData *Parent,
                                       const CursorIndex IndexInParent) {
-  return getUnknownStmt(S);
+  auto ReturnKW = findTokenSyntax(tok::kw_return, "return", SourceMgr,
+                                  S->getReturnLoc(), BufferID, Tokens);
+  auto Result = transformAST(S->getResult(), Sema, SourceMgr, BufferID,
+                             Tokens);
+
+  if (!Result.hasValue()) {
+    return getUnknownStmt(S);
+  }
+
+  return SyntaxFactory::makeReturnStmt(ReturnKW,
+    Result.getValue().castTo<ExprSyntax>()).Root;
 }
 
 RC<SyntaxData>
@@ -464,7 +510,7 @@ LegacyASTTransformer::visitGuardStmt(GuardStmt *S,
 RC<SyntaxData>
 LegacyASTTransformer::visitWhileStmt(WhileStmt *S,
                                      const SyntaxData *Parent,
-                                     const CursorIndex IndexInParent) {
+                                     const CursorIndex IndexInParent) { 
   return getUnknownStmt(S);
 }
 
@@ -547,8 +593,8 @@ LegacyASTTransformer::visitFallthroughStmt(FallthroughStmt *S,
   }
 
   auto FallthroughToken = findTokenSyntax(tok::kw_fallthrough, "fallthrough",
-                                        SourceMgr, S->getLoc(),
-                                        BufferID, Tokens);
+                                          SourceMgr, S->getLoc(),
+                                          BufferID, Tokens);
   return SyntaxFactory::makeFallthroughStmt(FallthroughToken).Root;
 }
 
@@ -593,7 +639,15 @@ RC<SyntaxData>
 LegacyASTTransformer::visitIntegerLiteralExpr(IntegerLiteralExpr *E,
                                               const SyntaxData *Parent,
                                               const CursorIndex IndexInParent) {
-  return getUnknownExpr(E);
+  auto Sign = E->getMinusLoc().isValid()
+    ? findTokenSyntax(tok::oper_prefix, OwnedString(),
+                      SourceMgr, E->getMinusLoc(),
+                      BufferID, Tokens)
+    : TokenSyntax::missingToken(tok::oper_prefix, "");
+  auto Digits = findTokenSyntax(tok::integer_literal, OwnedString(),
+                                SourceMgr, E->getDigitsLoc(),
+                                BufferID, Tokens);
+  return SyntaxFactory::makeIntegerLiteralExpr(Sign, Digits).Root;
 }
 
 RC<SyntaxData>
@@ -1102,14 +1156,6 @@ LegacyASTTransformer::visitPointerToPointerExpr(
   return getUnknownExpr(E);
 }
 
-RC<SyntaxData>
-LegacyASTTransformer::visitLValueToPointerExpr(
-    LValueToPointerExpr *E,
-    const SyntaxData *Parent,
-    const CursorIndex IndexInParent) {
-  return getUnknownExpr(E);
-}
-
 RC<SyntaxData> LegacyASTTransformer::visitForeignObjectConversionExpr(
     ForeignObjectConversionExpr *E,
     const SyntaxData *Parent,
@@ -1135,6 +1181,13 @@ LegacyASTTransformer::visitForcedCheckedCastExpr(
 
 RC<SyntaxData> LegacyASTTransformer::visitConditionalCheckedCastExpr(
     ConditionalCheckedCastExpr *E,
+    const SyntaxData *Parent,
+    const CursorIndex IndexInParent) {
+  return getUnknownExpr(E);
+}
+
+RC<SyntaxData> LegacyASTTransformer::visitKeyPathApplicationExpr(
+    KeyPathApplicationExpr *E,
     const SyntaxData *Parent,
     const CursorIndex IndexInParent) {
   return getUnknownExpr(E);
@@ -1213,19 +1266,26 @@ LegacyASTTransformer::visitObjCSelectorExpr(ObjCSelectorExpr *E,
 }
 
 RC<SyntaxData>
-LegacyASTTransformer::visitObjCKeyPathExpr(ObjCKeyPathExpr *E,
-                                           const SyntaxData *Parent,
-                                           const CursorIndex IndexInParent) {
+LegacyASTTransformer::visitKeyPathExpr(KeyPathExpr *E,
+                                       const SyntaxData *Parent,
+                                       const CursorIndex IndexInParent) {
+  return getUnknownExpr(E);
+}
+
+RC<SyntaxData>
+LegacyASTTransformer::visitKeyPathDotExpr(KeyPathDotExpr *E,
+                                          const SyntaxData *Parent,
+                                          const CursorIndex IndexInParent) {
   return getUnknownExpr(E);
 }
 
 RC<TokenSyntax>
 syntax::findTokenSyntax(tok ExpectedKind,
-                      OwnedString ExpectedText,
-                      SourceManager &SourceMgr,
-                      SourceLoc Loc,
-                      unsigned BufferID,
-                      const TokenPositionList &Tokens) {
+                        OwnedString ExpectedText,
+                        SourceManager &SourceMgr,
+                        SourceLoc Loc,
+                        unsigned BufferID,
+                        const TokenPositionList &Tokens) {
   auto Offset = SourceMgr.getLocOffsetInBuffer(Loc, BufferID);
 
   size_t Start = 0;
@@ -1238,11 +1298,10 @@ syntax::findTokenSyntax(tok ExpectedKind,
     auto Pos = TokAndPos.second;
 
     auto TokStart = Pos.getOffset();
-    auto TokEnd = TokStart + Tok->getText().size();
 
-    if (Offset >= TokStart && Offset <= TokEnd) {
+    if (Offset == TokStart) {
       if (Tok->getTokenKind() == ExpectedKind &&
-          (!ExpectedText.empty() && Tok->getText() == ExpectedText.str())) {
+          (ExpectedText.empty() || Tok->getText() == ExpectedText.str())) {
         return Tok;
       } else {
         return TokenSyntax::missingToken(ExpectedKind, ExpectedText);

@@ -418,9 +418,13 @@ static bool isGlobalAsMember(SwiftLookupTable::SingleEntry entry,
   // We have a declaration.
   auto decl = entry.get<clang::NamedDecl *>();
 
-  // Enumerators are always stored within the enumeration, despite
-  // having the translation unit as their redeclaration context.
-  if (isa<clang::EnumConstantDecl>(decl)) return false;
+  // Enumerators have the translation unit as their redeclaration context,
+  // but members of anonymous enums are still allowed to be in the
+  // global-as-member category.
+  if (isa<clang::EnumConstantDecl>(decl)) {
+    const auto *theEnum = cast<clang::EnumDecl>(decl->getDeclContext());
+    return !theEnum->hasNameForLinkage();
+  }
 
   // If the redeclaration context is namespace-scope, then we're
   // mapping as a member.
@@ -484,7 +488,7 @@ void SwiftLookupTable::addEntry(DeclName name, SingleEntry newEntry,
   }
 
   // Populate cache from reader if necessary.
-  findOrCreate(name.getBaseName().str());
+  findOrCreate(name.getBaseIdentifier().str());
 
   auto context = *contextOpt;
 
@@ -495,7 +499,7 @@ void SwiftLookupTable::addEntry(DeclName name, SingleEntry newEntry,
   }
 
   // Find the list of entries for this base name.
-  auto &entries = LookupTable[name.getBaseName().str()];
+  auto &entries = LookupTable[name.getBaseIdentifier().str()];
   auto decl = newEntry.dyn_cast<clang::NamedDecl *>();
   auto macro = newEntry.dyn_cast<clang::MacroInfo *>();
   for (auto &entry : entries) {
@@ -1541,8 +1545,11 @@ void importer::addEntryToLookupTable(SwiftLookupTable &table,
   }
 
   // If we have a name to import as, add this entry to the table.
-  if (auto importedName =
-          nameImporter.importName(named, ImportNameVersion::Swift3)) {
+  ImportNameVersion currentVersion =
+      nameVersionFromOptions(nameImporter.getLangOpts());
+  if (auto importedName = nameImporter.importName(named, currentVersion)) {
+    SmallPtrSet<DeclName, 8> distinctNames;
+    distinctNames.insert(importedName.getDeclName());
     table.addEntry(importedName.getDeclName(), named,
                    importedName.getEffectiveContext());
 
@@ -1553,14 +1560,19 @@ void importer::addEntryToLookupTable(SwiftLookupTable &table,
                               ArrayRef<Identifier>()),
                      named, importedName.getEffectiveContext());
 
-    // Import the Swift 2 name of this entity, and record it as well if it is
-    // different.
-    if (auto swift2Name =
-            nameImporter.importName(named, ImportNameVersion::Swift2)) {
-      if (swift2Name.getDeclName() != importedName.getDeclName())
-        table.addEntry(swift2Name.getDeclName(), named,
-                       swift2Name.getEffectiveContext());
-    }
+    forEachImportNameVersion([&] (ImportNameVersion alternateVersion) {
+      if (alternateVersion == currentVersion)
+        return;
+      auto alternateName = nameImporter.importName(named, alternateVersion);
+      if (!alternateName)
+        return;
+      // FIXME: What if the DeclNames are the same but the contexts are
+      // different?
+      if (distinctNames.insert(alternateName.getDeclName()).second) {
+        table.addEntry(alternateName.getDeclName(), named,
+                       alternateName.getEffectiveContext());
+      }
+    });
   } else if (auto category = dyn_cast<clang::ObjCCategoryDecl>(named)) {
     // If the category is invalid, don't add it.
     if (category->isInvalidDecl())

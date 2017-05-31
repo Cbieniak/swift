@@ -7,6 +7,7 @@ add_swift_library(swiftSema STATIC
   CSApply.cpp
   CSDiag.cpp
   CSGen.cpp
+  CSPropagate.cpp
   CSRanking.cpp
   CSSimplify.cpp
   CSSolver.cpp
@@ -15,6 +16,8 @@ add_swift_library(swiftSema STATIC
   ConstraintGraph.cpp
   ConstraintLocator.cpp
   ConstraintSystem.cpp
+  DerivedConformanceCodable.cpp
+  DerivedConformanceCodingKey.cpp
   DerivedConformanceEquatableHashable.cpp
   DerivedConformanceError.cpp
   DerivedConformanceRawRepresentable.cpp
@@ -34,6 +37,7 @@ add_swift_library(swiftSema STATIC
   TypeCheckAttr.cpp
   TypeCheckAvailability.cpp
   TypeCheckCaptures.cpp
+  TypeCheckCircularity.cpp
   TypeCheckConstraints.cpp
   TypeCheckDecl.cpp
   TypeCheckError.cpp
@@ -46,6 +50,7 @@ add_swift_library(swiftSema STATIC
   TypeCheckREPL.cpp
   TypeCheckRequest.cpp
   TypeCheckStmt.cpp
+  TypeCheckSwitchStmt.cpp
   TypeCheckType.cpp
   TypeChecker.cpp
   LINK_LIBRARIES

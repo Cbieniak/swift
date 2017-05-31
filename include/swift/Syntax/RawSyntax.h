@@ -21,7 +21,7 @@
 // to expressSwiftTypeConverter that at this layer.
 //
 // These are internal implementation ONLY - do not expose anything involving
-// RawSyntax publically. Clients of lib/Syntax should not be aware that they
+// RawSyntax publicly. Clients of lib/Syntax should not be aware that they
 // exist.
 //
 //===----------------------------------------------------------------------===//
@@ -150,6 +150,7 @@ public:
 enum class SyntaxKind {
   Token,
 #define SYNTAX(Id, Parent) Id,
+#define SYNTAX_COLLECTION(Id, Element) Id,
 #define MISSING_SYNTAX(Id, Parent) Id,
 #define SYNTAX_RANGE(Id, First, Last) First_##Id = First, Last_##Id = Last,
 #include "swift/Syntax/SyntaxKinds.def"
@@ -228,6 +229,23 @@ struct RawSyntax : public llvm::ThreadSafeRefCountedBase<RawSyntax> {
   /// Returns true if this raw syntax node is some kind of statement.
   bool isStmt() const {
     return Kind >= SyntaxKind::First_Stmt && Kind <= SyntaxKind::Last_Stmt;
+  }
+
+  /// Returns true if this raw syntax node is some kind of expression.
+  bool isExpr() const {
+    return Kind >= SyntaxKind::First_Expr && Kind <= SyntaxKind::Last_Expr;
+  }
+
+  /// Return true if this raw syntax node is a token.
+  bool isToken() const {
+    return Kind == SyntaxKind::Token;
+  }
+
+  bool isUnknown() const {
+    return Kind == SyntaxKind::Unknown ||
+           Kind == SyntaxKind::UnknownDecl ||
+           Kind == SyntaxKind::UnknownExpr ||
+           Kind == SyntaxKind::UnknownStmt;
   }
 
   /// Get the absolute position of this raw syntax: its offset, line,

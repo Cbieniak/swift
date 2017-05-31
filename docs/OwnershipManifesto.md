@@ -92,7 +92,7 @@ the ownership system from an implementation detail to a more
 visible aspect of the language.  They are also somewhat
 inseparable, for reasons we'll explain, although of course they
 can be prioritized differently.  For these reasons, we will
-talk about them as a cohensive feature called "ownership".
+talk about them as a cohesive feature called "ownership".
 
 ### A bit more detail
 
@@ -118,7 +118,7 @@ arbitrary function will use its arguments; it just falls
 back on a default rule for whether to pass ownership of
 the value.  When that default rule is wrong, the program
 will end up making extra copies at runtime.  So one simple
-thing we can do is allow programs to be more explicit at
+thing we can do is to allow programs to be more explicit at
 certain points about whether they need ownership or not.
 
 That closely dovetails with the desire to support non-copyable
@@ -219,8 +219,8 @@ we mean a specific instance of a semantic, user-language value.
 For example, consider the following Swift code:
 
 ```
-  var x = [1,2,3]
-  var y = x
+var x = [1,2,3]
+var y = x
 ```
 
 People would often say that `x` and `y` have the same value
@@ -311,7 +311,7 @@ A *variable* is the semantics concept of a unique place in
 memory that stores a value.  It's not necessarily mutable, at least
 as we're using it in this document.  Variables are usually created for
 storage declarations, but they can also be created dynamically in
-raw memory, e.g. using UnsafeRawPointer.  A variable always has a
+raw memory, e.g. using `UnsafeRawPointer`.  A variable always has a
 specific type.  It also has a *lifetime*, i.e. a point in the language
 semantics where it comes into existence and a point (or several)
 where it is destroyed.
@@ -419,14 +419,14 @@ the callee loads a value from its argument, then calls
 a function which the optimizer cannot reason about:
 
 ```
-  extension Array {
-    mutating func organize(_ predicate: (Element) -> Bool) {
-      let first = self[0]
-      if !predicate(first) { return }
-      ...
-      // something here uses first
-    }
+extension Array {
+  mutating func organize(_ predicate: (Element) -> Bool) {
+    let first = self[0]
+    if !predicate(first) { return }
+    ...
+    // something here uses first
   }
+}
 ```
 
 Under a callee-side rule, the optimizer must copy `self[0]`
@@ -612,7 +612,7 @@ be simultaneously accessed.  This will interfere with certain
 common idioms for working with arrays, although some cases
 (like concurrently modifying different slices of an array)
 are already quite problematic in Swift.  We believe that we
-can mitigate the majority of the impact here with targetted
+can mitigate the majority of the impact here with targeted
 improvements to the collection APIs.
 
 ## Enforcing the Law of Exclusivity
@@ -725,7 +725,7 @@ use static enforcement for some class instance properties.
 
 Undefined enforcement means that conflicts are not detected
 either statically or dynamically, and instead simply have
-undefined behavior.  This is not a desireable mechanism
+undefined behavior.  This is not a desirable mechanism
 for ordinary code given Swift's "safe by default" design,
 but it's the only real choice for things like unsafe pointers.
 
@@ -747,7 +747,7 @@ not to escape.  The following principles apply:
 - If a closure `C` potentially escapes, then for any variable
   `V` captured by `C`, all accesses to `V` potentially executed
   after a potential escape (including the accesses within `C`
-  itself) must use dynamic enforcement unless all such acesses
+  itself) must use dynamic enforcement unless all such accesses
   are reads.
 
 - If a closure `C` does not escape a function, then its
@@ -797,7 +797,7 @@ additional semantic concerns.
 A shared value can be used in the scope that binds it
 just like an ordinary parameter or `let` binding.
 If the shared value is used in a place that requires
-ownership, Swift will simply implicitly copy the value —
+ownership, Swift will simply implicitly copy the value --
 again, just like an ordinary parameter or `let` binding.
 
 #### Limitations of shared values
@@ -819,7 +819,7 @@ born from a trio of concerns:
 - We have to scope this proposal to something that can
   conceivably be implemented in the coming months.  We expect this
   proposal to yield major benefits to the language and its
-  implementaton, but it is already quite broad and aggressive.
+  implementation, but it is already quite broad and aggressive.
   First-class ephemerals would add enough complexity to the
   implementation and design that they are clearly out of scope.
   Furthermore, the remaining language-design questions are
@@ -861,7 +861,7 @@ born from a trio of concerns:
   lexical and maintains the ability to run arbitrary code
   at the end of an access.  Imagine what it would take to
   implement a loop that added these temporary mutable
-  references to an array — each iteration of the loop would
+  references to an array -- each iteration of the loop would
   have to be able to queue up arbitrary code to run as a clean-up
   when the function was finished with the array.  This would
   hardly be a low-cost abstraction!  A more Rust-like
@@ -917,9 +917,9 @@ semantically necessary when working with non-copyable types.
 We propose to remove this limitation in a straightforward way:
 
 ```
-  inout root = &tree.root
+inout root = &tree.root
 
-  shared elements = self.queue
+shared elements = self.queue
 ```
 
 The initializer is required and must be a storage reference
@@ -947,9 +947,9 @@ cases to be spelled explicitly:
 - A function argument can be explicitly declared `owned`:
 
   ```
-    func append(_ values: owned [Element]) {
-      ...
-    }
+  func append(_ values: owned [Element]) {
+    ...
+  }
   ```
 
   This cannot be combined with `shared` or `inout`.
@@ -961,9 +961,9 @@ cases to be spelled explicitly:
 - A function argument can be explicitly declared `shared`.
 
   ```
-    func ==(left: shared String, right: shared String) -> Bool {
-      ...
-    }
+  func ==(left: shared String, right: shared String) -> Bool {
+    ...
+  }
   ```
 
   This cannot be combined with `owned` or `inout`.
@@ -975,7 +975,7 @@ cases to be spelled explicitly:
   It's important to allow temporary values to be shared for
   function arguments because many function parameters will be
   marked as `shared` simply because the functions don't
-  actually from owning that parameter, not because it's in
+  actually benefit from owning that parameter, not because it's in
   any way semantically important that they be passed a
   reference to an existing variable.  For example, we expect
   to change things like comparison operators to take their
@@ -995,9 +995,9 @@ cases to be spelled explicitly:
 - A method can be explicitly declared `consuming`.
 
   ```
-    consuming func moveElements(into collection: inout [Element]) {
-      ...
-    }
+  consuming func moveElements(into collection: inout [Element]) {
+    ...
+  }
   ```
 
   This causes `self` to be passed as an owned value and therefore
@@ -1061,9 +1061,9 @@ This can be explicitly requested by declaring the iteration
 variable `owned`:
 
 ```
-  for owned employee in company.employees {
-    newCompany.employees.append(employee)
-  }
+for owned employee in company.employees {
+  newCompany.employees.append(employee)
+}
 ```
 
 It is also used implicitly when the requirements for a
@@ -1078,15 +1078,15 @@ A non-mutating iteration simply visits each of the elements
 in the collection, leaving it intact and unmodified.  We have
 no reason to copy the elements; the iteration variable can
 simply be bound to a shared value.  This is a `nonmutating`
-operaton on `Collection`.
+operation on `Collection`.
 
 This can be explicitly requested by declaring the iteration
 variable `shared`:
 
 ```
-  for shared employee in company.employees {
-    if !employee.respected { throw CatastrophicHRFailure() }
-  }
+for shared employee in company.employees {
+  if !employee.respected { throw CatastrophicHRFailure() }
+}
 ```
 
 It is also used by default when the sequence type is known to
@@ -1094,9 +1094,9 @@ conform to `Collection`, since this is the optimal way of
 iterating over a collection.
 
 ```
-  for employee in company.employees {
-    if !employee.respected { throw CatastrophicHRFailure() }
-  }
+for employee in company.employees {
+  if !employee.respected { throw CatastrophicHRFailure() }
+}
 ```
 
 If the sequence operand is a storage reference expression,
@@ -1118,13 +1118,13 @@ This must be explicitly requested by declaring the
 iteration variable `inout`:
 
 ```
-  for inout employee in company.employees {
-    employee.respected = true
-  }
+for inout employee in company.employees {
+  employee.respected = true
+}
 ```
 
 The sequence operand must be a storage reference expression.
-The storage will be accessed for the duraton of the loop,
+The storage will be accessed for the duration of the loop,
 which (as above) will prevent any other overlapping accesses
 to the collection.  (But this rule does not apply if the
 collection type defines the operation as a non-mutating
@@ -1146,13 +1146,13 @@ to follow this pattern, we would need to allow the definition
 of generator functions, e.g.:
 
 ```
-  mutating generator iterateMutable() -> inout Element {
-    var i = startIndex, e = endIndex
-    while i != e {
-      yield &self[i]
-      self.formIndex(after: &i)
-    }
+mutating generator iterateMutable() -> inout Element {
+  var i = startIndex, e = endIndex
+  while i != e {
+    yield &self[i]
+    self.formIndex(after: &i)
   }
+}
 ```
 
 On the client side, it is clear how this could be used to
@@ -1194,18 +1194,18 @@ The idea is that, instead of defining `get` and `set`,
 a storage declaration could define `read` and `modify`:
 
 ```
-  var x: String
-  var y: String
-  var first: String {
-    read {
-      if x < y { yield x }
-      else { yield y }
-    }
-    modify {
-      if x < y { yield &x }
-      else { yield &y }
-    }
+var x: String
+var y: String
+var first: String {
+  read {
+    if x < y { yield x }
+    else { yield y }
   }
+  modify {
+    if x < y { yield &x }
+    else { yield &y }
+  }
+}
 ```
 
 A storage declaration must define either a `get` or a `read`
@@ -1232,9 +1232,9 @@ For this reason, we propose the `move` function.  Conceptually,
 library:
 
 ```
-  func move<T>(_ value: T) -> T {
-    return value
-  }
+func move<T>(_ value: T) -> T {
+  return value
+}
 ```
 
 However, it is blessed with some special semantics.  It cannot
@@ -1271,9 +1271,9 @@ variables are initialized before use.
 `copy` is a top-level function in the Swift standard library:
 
 ```
-  func copy<T>(_ value: T) -> T {
-    return value
-  }
+func copy<T>(_ value: T) -> T {
+  return value
+}
 ```
 
 The argument must be a storage reference expression.  The
@@ -1285,7 +1285,7 @@ value is returned.  This is useful for several reasons:
   reference, that storage is normally accessed for the duration
   of the call.  The programmer can suppress this and force the
   copy to complete before the call by calling `copy` on the
-  storage reference before 
+  storage reference before.
 
 - It is necessary for types that have suppressed implicit
   copies.  See the section below on non-copyable types.
@@ -1295,7 +1295,7 @@ value is returned.  This is useful for several reasons:
 `endScope` is a top-level function in the Swift standard library:
 
 ```
-  func endScope<T>(_ value: T) -> () {}
+func endScope<T>(_ value: T) -> () {}
 ```
 
 The argument must be a reference to a local `let`, `var`, or
@@ -1327,7 +1327,7 @@ There is some recurring interest in the community in allowing programs
 to abstract over storage, so that you might say:
 
 ```
-  let prop = Widget.weight
+let prop = Widget.weight
 ```
 
 and then `prop` would be an abstract reference to the `weight`
@@ -1402,16 +1402,16 @@ default.
 
 The logical solution is to maintain the default assumption
 that all types are copyable, and then allow select contexts
-to turn that assumption off.  We will cause these contexts
+to turn that assumption off.  We will call these contexts
 `moveonly` contexts.  All contexts lexically nested within
 a `moveonly` context are also implicitly `moveonly`.
 
 A type can be a `moveonly` context:
 
 ```
-  moveonly struct Array<Element> {
-    // Element and Array<Element> are not assumed to be copyable here
-  }
+moveonly struct Array<Element> {
+  // Element and Array<Element> are not assumed to be copyable here
+}
 ```
 
 This suppresses the `Copyable` assumption for the type
@@ -1421,18 +1421,18 @@ hierarchies of associated types.
 An extension can be a `moveonly` context:
 
 ```
-  moveonly extension Array {
-    // Element and Array<Element> are not assumed to be copyable here
-  }
+moveonly extension Array {
+  // Element and Array<Element> are not assumed to be copyable here
+}
 ```
 
 A type can declare conditional copyability using a conditional
 conformance:
 
 ```
-  moveonly extension Array: Copyable where Element: Copyable {
-    ...
-  }
+moveonly extension Array: Copyable where Element: Copyable {
+  ...
+}
 ```
 
 Conformance to `Copyable`, conditional or not, is an
@@ -1451,9 +1451,9 @@ it a non-`moveonly` extension is an error.
 A function can be a `moveonly` context:
 
 ```
-  extension Array {
-    moveonly func report<U>(_ u: U)
-  }
+extension Array {
+  moveonly func report<U>(_ u: U)
+}
 ```
 
 This suppresses the copyability assumption for any new
@@ -1484,30 +1484,30 @@ example, here is a simple file-handle type that ensures
 that the handle is closed when the value is destroyed:
 
 ```
-  moveonly struct File {
-    var descriptor: Int32
+moveonly struct File {
+  var descriptor: Int32
 
-    init(filename: String) throws {
-      descriptor = Darwin.open(filename, O_RDONLY)
+  init(filename: String) throws {
+    descriptor = Darwin.open(filename, O_RDONLY)
 
-      // Abnormally exiting 'init' at any point prevents deinit
-      // from being called.
-      if descriptor == -1 { throw ... }
-    }
-
-    deinit {
-      _ = Darwin.close(descriptor)
-    }
-
-    consuming func close() throws {
-      if Darwin.fsync(descriptor) != 0 { throw ... }
-
-      // This is a consuming function, so it has ownership of self.
-      // It doesn't consume self in any other way, so it will
-      // destroy it when it exits by calling deinit.  deinit
-      // will then handle actually closing the descriptor.
-    }
+    // Abnormally exiting 'init' at any point prevents deinit
+    // from being called.
+    if descriptor == -1 { throw ... }
   }
+
+  deinit {
+    _ = Darwin.close(descriptor)
+  }
+
+  consuming func close() throws {
+    if Darwin.fsync(descriptor) != 0 { throw ... }
+
+    // This is a consuming function, so it has ownership of self.
+    // It doesn't consume self in any other way, so it will
+    // destroy it when it exits by calling deinit.  deinit
+    // will then handle actually closing the descriptor.
+  }
+}
 ```
 
 Swift is permitted to destroy a value (and thus call `deinit`)

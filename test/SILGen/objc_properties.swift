@@ -1,13 +1,12 @@
-// RUN: %target-swift-frontend -Xllvm -new-mangling-for-tests %s -emit-silgen -emit-verbose-sil -sdk %S/Inputs -I %S/Inputs -enable-source-import | %FileCheck %s
+// RUN: %target-swift-frontend %s -emit-silgen -emit-verbose-sil -sdk %S/Inputs -I %S/Inputs -enable-source-import | %FileCheck %s
 
 // REQUIRES: objc_interop
 
 import Foundation
 
-
 class A {
-  dynamic var prop: Int
-  dynamic var computedProp: Int {
+  @objc dynamic var prop: Int
+  @objc dynamic var computedProp: Int {
     get {
       return 5
     }
@@ -156,31 +155,56 @@ class Singleton : NSObject {
 }
 
 class HasUnmanaged : NSObject {
-  // CHECK-LABEL: sil hidden [thunk] @_T015objc_properties12HasUnmanagedC3refs0D0Vys9AnyObject_pGSgfgTo
+  // CHECK-LABEL: sil hidden [thunk] @_T015objc_properties12HasUnmanagedC3refs0D0VyyXlGSgfgTo
   // CHECK: bb0([[CLS:%.*]] : $HasUnmanaged):
   // CHECK:     [[CLS_COPY:%.*]] = copy_value [[CLS]]
   // CHECK:     [[BORROWED_CLS_COPY:%.*]] = begin_borrow [[CLS_COPY]]
-  // CHECK:     [[NATIVE:%.+]] = function_ref @_T015objc_properties12HasUnmanagedC3refs0D0Vys9AnyObject_pGSgfg
+  // CHECK:     [[NATIVE:%.+]] = function_ref @_T015objc_properties12HasUnmanagedC3refs0D0VyyXlGSgfg
   // CHECK:     [[RESULT:%.+]] = apply [[NATIVE]]([[BORROWED_CLS_COPY]])
   // CHECK:     end_borrow [[BORROWED_CLS_COPY]] from [[CLS_COPY]]
   // CHECK-NOT: {{(retain|release)}}
   // CHECK:     destroy_value [[CLS_COPY]] : $HasUnmanaged
   // CHECK-NOT: {{(retain|release)}}
   // CHECK:     return [[RESULT]] : $Optional<Unmanaged<AnyObject>>
-  // CHECK: } // end sil function '_T015objc_properties12HasUnmanagedC3refs0D0Vys9AnyObject_pGSgfgTo'
+  // CHECK: } // end sil function '_T015objc_properties12HasUnmanagedC3refs0D0VyyXlGSgfgTo'
 
-  // CHECK-LABEL: sil hidden [thunk] @_T015objc_properties12HasUnmanagedC3refs0D0Vys9AnyObject_pGSgfsTo
+  // CHECK-LABEL: sil hidden [thunk] @_T015objc_properties12HasUnmanagedC3refs0D0VyyXlGSgfsTo
   // CHECK: bb0([[NEW_VALUE:%.*]] : $Optional<Unmanaged<AnyObject>>, [[SELF:%.*]] : $HasUnmanaged):
   // CHECK-NEXT: [[SELF_COPY:%.*]] = copy_value [[SELF]] : $HasUnmanaged
   // CHECK-NEXT: [[BORROWED_SELF_COPY:%.*]] = begin_borrow [[SELF_COPY]]
   // CHECK-NEXT: // function_ref
-  // CHECK-NEXT: [[NATIVE:%.+]] = function_ref @_T015objc_properties12HasUnmanagedC3refs0D0Vys9AnyObject_pGSgfs
+  // CHECK-NEXT: [[NATIVE:%.+]] = function_ref @_T015objc_properties12HasUnmanagedC3refs0D0VyyXlGSgfs
   // CHECK-NEXT: [[RESULT:%.*]] = apply [[NATIVE]]([[NEW_VALUE]], [[BORROWED_SELF_COPY]])
   // CHECK-NEXT: end_borrow [[BORROWED_SELF_COPY]] from [[SELF_COPY]]
   // CHECK-NEXT: destroy_value [[SELF_COPY]] : $HasUnmanaged
   // CHECK-NEXT: return [[RESULT:%.*]]
-  // CHECK: } // end sil function '_T015objc_properties12HasUnmanagedC3refs0D0Vys9AnyObject_pGSgfsTo'
-  var ref: Unmanaged<AnyObject>?
+  // CHECK: } // end sil function '_T015objc_properties12HasUnmanagedC3refs0D0VyyXlGSgfsTo'
+  @objc var ref: Unmanaged<AnyObject>?
+}
+
+@_silgen_name("autoreleasing_user")
+func useAutoreleasingUnsafeMutablePointer(_ a: AutoreleasingUnsafeMutablePointer<NSObject>)
+
+class NonObjCClassWithObjCProperty {
+  var property: NSObject
+
+  init(_ newValue: NSObject) {
+    property = newValue
+  }
+
+  // CHECK-LABEL: sil hidden @_T015objc_properties016NonObjCClassWithD9CPropertyC11usePropertyyyF : $@convention(method) (@guaranteed NonObjCClassWithObjCProperty) -> () {
+  // CHECK: bb0([[ARG:%.*]] : $NonObjCClassWithObjCProperty):
+  // CHECK: [[MATERIALIZE_FOR_SET:%.*]] = class_method [[ARG]] : $NonObjCClassWithObjCProperty, #NonObjCClassWithObjCProperty.property!materializeForSet.1
+  // CHECK: [[TUPLE:%.*]] = apply [[MATERIALIZE_FOR_SET]]({{.*}}, {{.*}}, [[ARG]])
+  // CHECK: [[RAW_POINTER:%.*]] = tuple_extract [[TUPLE]] : $(Builtin.RawPointer, Optional<Builtin.RawPointer>), 0
+  // CHECK: [[OBJECT:%.*]] = pointer_to_address [[RAW_POINTER]] : $Builtin.RawPointer to [strict] $*NSObject
+  // CHECK: [[OBJECT_DEP:%.*]] = mark_dependence [[OBJECT]] : $*NSObject on [[ARG]]
+  // CHECK: [[LOADED_OBJECT:%.*]] = load_borrow [[OBJECT_DEP]]
+  // CHECK: [[UNMANAGED_OBJECT:%.*]] = ref_to_unmanaged [[LOADED_OBJECT]] : $NSObject to $@sil_unmanaged NSObject
+  // CHECK: end_borrow [[LOADED_OBJECT]] from [[OBJECT_DEP]]
+  func useProperty() {
+    useAutoreleasingUnsafeMutablePointer(&property)
+  }
 }
 
 
@@ -201,3 +225,24 @@ class NonObjCBaseClass : NSObject {
 
 // CHECK-LABEL: sil hidden [thunk] @_T015objc_properties12ObjCSubclassC8propertySifgTo
 // CHECK-LABEL: sil hidden [thunk] @_T015objc_properties12ObjCSubclassC8propertySifsTo
+
+// Make sure lazy properties that witness @objc protocol requirements are
+// correctly formed
+//
+// <https://bugs.swift.org/browse/SR-1825>
+
+@objc protocol HasProperty {
+    @objc var window: NSObject? { get set }
+}
+
+class HasLazyProperty : NSObject, HasProperty {
+  func instanceMethod() -> NSObject? {
+    return nil
+  }
+
+  lazy var window = instanceMethod()
+}
+
+// CHECK-LABEL: sil hidden @_T015objc_properties15HasLazyPropertyC6windowSo8NSObjectCSgfg : $@convention(method) (@guaranteed HasLazyProperty) -> @owned Optional<NSObject> {
+// CHECK: class_method %0 : $HasLazyProperty, #HasLazyProperty.instanceMethod!1 : (HasLazyProperty) -> () -> NSObject?
+// CHECK: return

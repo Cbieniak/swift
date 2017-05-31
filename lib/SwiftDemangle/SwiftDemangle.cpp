@@ -15,7 +15,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "swift/Basic/Demangle.h"
+#include "swift/Demangling/Demangle.h"
 #include "swift/SwiftDemangle/SwiftDemangle.h"
 
 static size_t swift_demangle_getDemangledName_Options(const char *MangledName,
@@ -52,6 +52,13 @@ size_t swift_demangle_getSimplifiedDemangledName(const char *MangledName,
   auto Opts = swift::Demangle::DemangleOptions::SimplifiedUIDemangleOptions();
   return swift_demangle_getDemangledName_Options(MangledName, OutputBuffer,
                                                  Length, Opts);
+}
+
+int swift_demangle_hasSwiftCallingConvention(const char *MangledName) {
+  swift::Demangle::Context DCtx;
+  if (DCtx.hasSwiftCallingConvention(llvm::StringRef(MangledName)))
+    return 1;
+  return 0;
 }
 
 size_t fnd_get_demangled_name(const char *MangledName, char *OutputBuffer,

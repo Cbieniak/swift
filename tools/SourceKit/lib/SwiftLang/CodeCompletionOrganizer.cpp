@@ -158,7 +158,7 @@ bool SourceKit::CodeCompletion::addCustomCompletions(
     CodeCompletion::SwiftResult swiftResult(
         CodeCompletion::SwiftResult::ResultKind::Pattern,
         SemanticContextKind::ExpressionSpecific,
-        /*numBytesToErase=*/0, completionString);
+        /*NumBytesToErase=*/0, completionString);
 
     CompletionBuilder builder(sink, swiftResult);
     builder.setCustomKind(customCompletion.Kind);
@@ -952,7 +952,7 @@ static void sortRecursive(const Options &options, Group *group,
   auto &contents = group->contents;
   double best = -1.0;
   for (auto &item : contents) {
-    if (Group *g = dyn_cast<Group>(item.get())) {
+    if (auto *g = dyn_cast<Group>(item.get())) {
       sortRecursive(options, g, hasExpectedTypes);
     } else {
       Result *r = cast<Result>(item.get());
@@ -1047,7 +1047,7 @@ void CodeCompletionOrganizer::Impl::groupStemsRecursive(
 
   auto start = worklist.begin();
   while (start != worklist.end()) {
-    if (Group *g = dyn_cast<Group>(start->get())) {
+    if (auto *g = dyn_cast<Group>(start->get())) {
       groupStemsRecursive(g, recurseIntoNewGroups, getStem);
       newContents.push_back(std::move(*start));
       ++start;
@@ -1356,7 +1356,6 @@ NameStyle::NameStyle(StringRef name)
   unsigned underscores = 0;
   unsigned caseCount[3] = {0, 0, 0};
   Case leadingCase = None;
-  Case prevCase = None;
   for (; pos < center.size(); ++pos) {
     char c = center[pos];
     Case curCase = caseOf(c);
@@ -1365,7 +1364,6 @@ NameStyle::NameStyle(StringRef name)
 
     underscores += (c == '_');
     caseCount[curCase] += 1;
-    prevCase = curCase;
   }
 
   assert(caseCount[leadingCase] > 0);

@@ -24,8 +24,11 @@
 
 #include "swift/Syntax/References.h"
 #include "swift/Syntax/DeclSyntax.h"
+#include "swift/Syntax/GenericSyntax.h"
+#include "swift/Syntax/ExprSyntax.h"
 #include "swift/Syntax/StmtSyntax.h"
 #include "swift/Syntax/Syntax.h"
+#include "swift/Syntax/UnknownSyntax.h"
 
 namespace swift {
 namespace syntax {
@@ -37,6 +40,7 @@ struct SyntaxRewriter {
   virtual Id##Syntax rewrite##Id(Id##Syntax Node) { \
     return Node; \
   }
+#define SYNTAX_COLLECTION(Id, Element) SYNTAX(Id, {})
 #include "swift/Syntax/SyntaxKinds.def"
   virtual ~SyntaxRewriter() = default;
 };

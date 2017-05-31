@@ -1,4 +1,4 @@
-//===--- swift-syntax-test.cpp - Reflection Syntax testing application ----===//
+//===--- swift-syntax-format.cpp - Reflection Syntax testing application --===//
 //
 // This source file is part of the Swift.org open source project
 //
@@ -89,5 +89,5 @@ int main(int argc, char *argv[]) {
   llvm::cl::ParseCommandLineOptions(argc, argv,
                                     "A tool to format Swift code\n");
 
-  return doFormat({"/Users/david/test.swift"});
+  return doFormat({"/does/not/exist/test.swift"});
 }

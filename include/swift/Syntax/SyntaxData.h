@@ -26,7 +26,7 @@
 // Conceptually, SyntaxData add the characteristic of specific identity in a
 // piece of Swift source code. While the RawSyntax for the integer literal
 // token '1' can be reused anywhere a '1' occurs and has identical formatting,
-// a SyntaxData reprsents *a* specific '1' at a particular location in
+// a SyntaxData represents *a* specific '1' at a particular location in
 // Swift source.
 //
 // These are effectively internal implementation. For all public APIs, look
@@ -43,6 +43,8 @@
 #include "swift/Syntax/References.h"
 #include "swift/Syntax/Syntax.h"
 #include "llvm/ADT/DenseMap.h"
+
+#include <atomic>
 
 namespace swift {
 namespace syntax {
@@ -75,7 +77,7 @@ public:
   ///
   /// If there is no parent, this is 0.
   const CursorIndex IndexInParent;
-protected:
+
   SyntaxData(RC<RawSyntax> Raw, const SyntaxData *Parent = nullptr,
              CursorIndex IndexInParent = 0)
     : Raw(Raw), Parent(Parent), IndexInParent(IndexInParent) {}
@@ -103,8 +105,80 @@ protected:
     }
   }
 
+  /// Unsafely instantiate a child within another node.
+  ///
+  /// DANGER!
+  ///
+  /// Scary thread-safe code here. This should only be used for internally
+  /// mutating cached children!
+  ///
+  /// Why do we need this?
+  /// - ___SyntaxData nodes should have pointer identity.
+  /// - We only want to construct parented, realized child nodes as
+  /// ___SyntaxData when asked.
+  ///
+  /// For example, if we have a ReturnStmtSyntax, and ask for its returned
+  /// expression for the first time with getExpression(), two nodes can race
+  /// to create and set the cached expression.
+  ///
+  ///
+  /// Looking at an example - say we have a ReturnStmtSyntaxData.
+  ///
+  /// ReturnStmtSyntaxData = {
+  ///   RC<RawSyntax> Raw = {
+  ///     RC<TokenSyntax { SyntaxKind::Token, tok::return_kw, "return" },
+  ///     RC<RawSyntax> { SyntaxKind::SomeExpression, ... }
+  ///   }
+  ///   RC<ExprSyntaxData> CachedExpression = { 0 };
+  /// }
+  ///
+  /// We pretend that `CachedExpression` is a std::atomic<uintptr_t> &, so that
+  /// we can safely instantiate that field using the RawSyntax for the
+  /// expression, i.e. getRaw()->getChild(ReturnStmtSyntax::Cursor::Expression))
+  template <typename SyntaxNode>
+  static
+  void realizeSyntaxNode(std::atomic<uintptr_t> &Child,
+                         RC<RawSyntax> RawChild,
+                         const SyntaxData *Parent,
+                         CursorIndex IndexInParent) {
+    // We rely on the fact that an RC<___SyntaxData> is pointer-sized, which
+    // means we can atomically compare-exchange the child field.
+    // If we can't do that, we can't pretend it's a uintptr_t and use its
+    // compare_exchange_strong.
+    static_assert(
+      sizeof(uintptr_t) == sizeof(RC<typename SyntaxNode::DataType>),
+      "Can't safely atomically replace a child SyntaxData node "
+      "for caching! This is the end of the world!");
+
+    if (Child == 0) {
+      // We expect the uncached value to wrap a nullptr. If another thread
+      // beats us to caching the child, it'll be non-null, so we would
+      // leave it alone.
+      uintptr_t Expected = 0;
+
+      // Make a RC<SyntaxNode::DataType> at RefCount == 1, which we'll try to
+      // atomically swap in.
+      RC<typename SyntaxNode::DataType> Data =
+        cast<typename SyntaxNode::DataType>(
+          SyntaxData::makeDataFromRaw(RawChild, Parent, IndexInParent));
+
+      // Try to swap in raw pointer value.
+      auto SuccessfullySwapped =
+        Child.compare_exchange_strong(Expected,
+                                      reinterpret_cast<uintptr_t>(Data.get()));
+
+      // If we won, then leave the RefCount == 1.
+      if (SuccessfullySwapped) {
+        Data.resetWithoutRelease();
+      }
+
+      // Otherwise, the Data we just made is unfortunately useless.
+      // Let it die on this scope exit after its terminal release.
+    }
+  }
+
   /// Replace a child in the raw syntax and recursively rebuild the
-  /// parental chain up to the rooet.
+  /// parental chain up to the root.
   ///
   /// This is the effective private implementation of all setters in
   /// subclasses of `SyntaxData`.
@@ -118,6 +192,11 @@ protected:
   }
 
 public:
+
+  static RC<SyntaxData> makeDataFromRaw(RC<RawSyntax> Raw,
+                                        const SyntaxData *Parent,
+                                        CursorIndex IndexInParent);
+
   static RC<SyntaxData> make(RC<RawSyntax> Raw,
                              const SyntaxData *Parent = nullptr,
                              CursorIndex IndexInParent = 0);
@@ -160,24 +239,15 @@ public:
   /// Returns true if the data node represents declaration syntax.
   bool isDecl() const;
 
+  /// Returns true if the data node represents expression syntax.
+  bool isExpr() const;
+
+  /// Returns true if this syntax is of some "unknown" kind.
+  bool isUnknown() const;
+
   /// Dump a debug description of the syntax data for debugging to
   /// standard error.
   void dump(llvm::raw_ostream &OS) const;
-};
-
-class UnknownSyntaxData final : public SyntaxData {
-  friend class SyntaxData;
-  friend class UnknownSyntax;
-  friend struct SyntaxFactory;
-  friend class LegacyASTTransformer;
-
-  UnknownSyntaxData(RC<RawSyntax> Raw, const SyntaxData *Parent = nullptr,
-                    CursorIndex IndexInParent = 0)
-    : SyntaxData(Raw, Parent, IndexInParent) {}
-
-  static RC<UnknownSyntaxData> make(RC<RawSyntax> Raw);
-public:
-  static bool classof(const SyntaxData *SD);
 };
 
 } // end namespace syntax
@@ -186,7 +256,7 @@ public:
 // DenseMapInfo for RC<SyntaxData>, used for a Syntax Node -> lib/AST mapping.
 namespace llvm {
   using SD = swift::syntax::SyntaxData;
-  using RCSD = swift::syntax::RC<SD>;
+  using RCSD = swift::RC<SD>;
   template <> struct llvm::DenseMapInfo<RCSD> {
     static inline RCSD getEmptyKey() {
       return SD::make(nullptr, nullptr, 0);

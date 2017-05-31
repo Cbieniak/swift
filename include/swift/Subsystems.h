@@ -133,7 +133,7 @@ namespace swift {
 
   /// \brief Lex and return a vector of `RC<TokenSyntax>` tokens, which include
   /// leading and trailing trivia.
-  std::vector<std::pair<syntax::RC<syntax::TokenSyntax>,
+  std::vector<std::pair<RC<syntax::TokenSyntax>,
                                    syntax::AbsolutePosition>>
   tokenizeWithTrivia(const LangOptions &LangOpts,
                      const SourceManager &SM,
@@ -346,7 +346,6 @@ namespace swift {
     struct Implementation;
     Implementation &Impl;
   };
-
 } // end namespace swift
 
 #endif // SWIFT_SUBSYSTEMS_H

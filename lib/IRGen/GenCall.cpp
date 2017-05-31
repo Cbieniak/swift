@@ -251,7 +251,7 @@ namespace {
 
     bool claimError() {
       auto Ret = CanUseError;
-      assert(CanUseError && "Mulitple error parameters?!");
+      assert(CanUseError && "Multiple error parameters?!");
       CanUseError = false;
       return Ret;
     }
@@ -1011,6 +1011,7 @@ void SignatureExpansion::expand(SILParameterInfo param) {
   auto &ti = IGM.getTypeInfo(paramSILType);
   switch (auto conv = param.getConvention()) {
   case ParameterConvention::Indirect_In:
+  case ParameterConvention::Indirect_In_Constant:
   case ParameterConvention::Indirect_In_Guaranteed:
     addIndirectValueParameterAttributes(IGM, Attrs, ti, ParamIRTypes.size());
     addPointerParameter(
@@ -1229,7 +1230,7 @@ void irgen::extractScalarResults(IRGenFunction &IGF, llvm::Type *bodyType,
   if (bodyType != callType)
     returned = IGF.coerceValue(returned, bodyType, IGF.IGM.DataLayout);
 
-  if (llvm::StructType *structType = dyn_cast<llvm::StructType>(bodyType))
+  if (auto *structType = dyn_cast<llvm::StructType>(bodyType))
     for (unsigned i = 0, e = structType->getNumElements(); i != e; ++i)
       out.add(IGF.Builder.CreateExtractValue(returned, i));
   else
@@ -2450,7 +2451,7 @@ Explosion NativeConventionSchema::mapFromNative(IRGenModule &IGM,
                                          ? coercionTy
                                          : overlappedCoercionTy;
 
-  // Allocate a temporary for the coersion.
+  // Allocate a temporary for the coercion.
   Address temporary;
   Size tempSize;
   std::tie(temporary, tempSize) = allocateForCoercion(
@@ -2580,7 +2581,7 @@ Explosion NativeConventionSchema::mapIntoNative(IRGenModule &IGM,
                                          ? coercionTy
                                          : overlappedCoercionTy;
 
-  // Allocate a temporary for the coersion.
+  // Allocate a temporary for the coercion.
   Address temporary;
   Size tempSize;
   std::tie(temporary, tempSize) = allocateForCoercion(
@@ -2647,7 +2648,7 @@ void IRGenFunction::emitScalarReturn(SILType resultType, Explosion &result,
     return;
   }
 
-  // In the native case no coersion is needed.
+  // In the native case no coercion is needed.
   if (isSwiftCCReturn) {
     auto &nativeSchema =
         IGM.getTypeInfo(resultType).nativeReturnValueSchema(IGM);

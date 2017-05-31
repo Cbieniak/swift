@@ -31,6 +31,8 @@
 #
 
 import argparse
+import csv
+import datetime
 import resource
 import subprocess
 import sys
@@ -85,13 +87,23 @@ parser.add_argument("--verbose",
                     action='store_true',
                     default=False,
                     help="always report status and usage")
+parser.add_argument("--csv",
+                    action='store_true',
+                    default=False,
+                    help="write results as CSV")
+parser.add_argument("--csv-output", default="-",
+                    type=argparse.FileType('ab', 0),
+                    help="Append CSV output to file")
+parser.add_argument("--csv-name", type=str,
+                    default=str(datetime.datetime.now()),
+                    help="Label row in CSV with name")
 parser.add_argument('remainder', nargs=argparse.REMAINDER,
                     help="subcommand to run under supervision")
 
 args = parser.parse_args()
 if len(args.remainder) == 0:
     parser.print_help()
-    exit(1)
+    sys.exit(1)
 
 if args.enforce:
     if args.time is not None:
@@ -132,6 +144,15 @@ if over_time:
     sys.stderr.write("rusage:  exceeded limit: %.6f secs\n"
                      % args.time)
 
+if args.csv:
+    fieldnames = ["time", "mem", "run"]
+    out = csv.DictWriter(args.csv_output, fieldnames, dialect='excel-tab')
+    if args.csv_output.tell() == 0:
+        out.writeheader()
+    out.writerow(dict(time=used.ru_utime,
+                      mem=used.ru_maxrss,
+                      run=args.csv_name))
+
 if over_mem or over_time:
-    exit(-1)
-exit(ret)
+    sys.exit(-1)
+sys.exit(ret)

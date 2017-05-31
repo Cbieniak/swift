@@ -19,7 +19,7 @@
 
 #include "swift/Runtime/Metadata.h"
 #include "swift/Remote/MemoryReader.h"
-#include "swift/Basic/Demangle.h"
+#include "swift/Demangling/Demangler.h"
 #include "swift/Basic/LLVM.h"
 #include "swift/Runtime/Unreachable.h"
 
@@ -105,8 +105,7 @@ class TypeDecoder {
         if (repr->getKind() != NodeKind::MetatypeRepresentation ||
             !repr->hasText())
           return BuiltType();
-        auto &str = repr->getText();
-        if (str != "@thin")
+        if (repr->getText() != "@thin")
           wasAbstract = true;
       }
       auto instance = decodeMangledType(Node->getChild(i));
@@ -134,23 +133,68 @@ class TypeDecoder {
       }
       if (protocols.size() == 1)
         return protocols.front();
-      else
-        return Builder.createProtocolCompositionType(protocols);
+      return Builder.createProtocolCompositionType(
+          protocols,
+          /*hasExplicitAnyObject=*/false);
+    }
+    case NodeKind::ProtocolListWithAnyObject: {
+      std::vector<BuiltType> protocols;
+      auto ProtocolList = Node->getChild(0);
+      auto TypeList = ProtocolList->getChild(0);
+      for (auto componentType : *TypeList) {
+        if (auto protocol = decodeMangledType(componentType))
+          protocols.push_back(protocol);
+        else
+          return BuiltType();
+      }
+      return Builder.createProtocolCompositionType(
+          protocols,
+          /*hasExplicitAnyObject=*/true);
+    }
+    case NodeKind::ProtocolListWithClass: {
+      std::vector<BuiltType> members;
+      auto ProtocolList = Node->getChild(0);
+      auto TypeList = ProtocolList->getChild(0);
+      for (auto componentType : *TypeList) {
+        if (auto protocol = decodeMangledType(componentType))
+          members.push_back(protocol);
+        else
+          return BuiltType();
+      }
+
+      auto SuperclassNode = Node->getChild(1);
+      if (auto superclass = decodeMangledType(SuperclassNode))
+        members.push_back(superclass);
+
+      return Builder.createProtocolCompositionType(
+          members,
+          /*hasExplicitAnyObject=*/true);
     }
     case NodeKind::Protocol: {
       auto moduleName = Node->getChild(0)->getText();
-      auto name = Node->getChild(1)->getText();
+      auto nameNode = Node->getChild(1);
+      std::string privateDiscriminator, name;
+      if (nameNode->getKind() == NodeKind::PrivateDeclName) {
+        privateDiscriminator = nameNode->getChild(0)->getText();
+        name = nameNode->getChild(1)->getText();
+      } else if (nameNode->getKind() == NodeKind::Identifier) {
+        name = Node->getChild(1)->getText();
+      } else {
+        return BuiltType();
+      }
 
       // Consistent handling of protocols and protocol compositions
-      auto protocolList = Demangle::NodeFactory::create(NodeKind::ProtocolList);
-      auto typeList = Demangle::NodeFactory::create(NodeKind::TypeList);
-      auto type = Demangle::NodeFactory::create(NodeKind::Type);
-      type->addChild(Node);
-      typeList->addChild(type);
-      protocolList->addChild(typeList);
+      Demangle::Demangler Dem;
+      auto protocolList = Dem.createNode(NodeKind::ProtocolList);
+      auto typeList = Dem.createNode(NodeKind::TypeList);
+      auto type = Dem.createNode(NodeKind::Type);
+      type->addChild(Node, Dem);
+      typeList->addChild(type, Dem);
+      protocolList->addChild(typeList, Dem);
 
       auto mangledName = Demangle::mangleNode(protocolList);
-      return Builder.createProtocolType(mangledName, moduleName, name);
+      return Builder.createProtocolType(mangledName, moduleName,
+                                        privateDiscriminator, name);
     }
     case NodeKind::DependentGenericParamType: {
       auto depth = Node->getChild(0)->getIndex();
@@ -199,9 +243,7 @@ class TypeDecoder {
           if (!child->hasText())
             return BuiltType();
 
-          auto &text = child->getText();
-
-          if (text == "@convention(thin)") {
+          if (child->getText() == "@convention(thin)") {
             flags =
               flags.withConvention(FunctionMetadataConvention::Thin);
           }
@@ -209,7 +251,7 @@ class TypeDecoder {
           if (!child->hasText())
             return BuiltType();
 
-          auto &text = child->getText();
+          StringRef text = child->getText();
           if (text == "@convention(c)") {
             flags =
               flags.withConvention(FunctionMetadataConvention::CFunctionPointer);
@@ -235,17 +277,23 @@ class TypeDecoder {
       return decodeMangledType(Node->getChild(0));
     case NodeKind::ReturnType:
       return decodeMangledType(Node->getChild(0));
-    case NodeKind::NonVariadicTuple:
-    case NodeKind::VariadicTuple: {
+    case NodeKind::Tuple: {
       std::vector<BuiltType> elements;
       std::string labels;
+      bool variadic = false;
       for (auto &element : *Node) {
         if (element->getKind() != NodeKind::TupleElement)
           return BuiltType();
 
         // If the tuple element is labeled, add its label to 'labels'.
         unsigned typeChildIndex = 0;
-        if (element->getChild(0)->getKind() == NodeKind::TupleElementName) {
+        unsigned nameIdx = 0;
+        if (element->getChild(nameIdx)->getKind() == NodeKind::VariadicMarker) {
+          variadic = true;
+          nameIdx = 1;
+          typeChildIndex = 1;
+        }
+        if (element->getChild(nameIdx)->getKind() == NodeKind::TupleElementName) {
           // Add spaces to terminate all the previous labels if this
           // is the first we've seen.
           if (labels.empty()) labels.append(elements.size(), ' ');
@@ -253,7 +301,7 @@ class TypeDecoder {
           // Add the label and its terminator.
           labels += element->getChild(0)->getText();
           labels += ' ';
-          typeChildIndex = 1;
+          typeChildIndex++;
 
         // Otherwise, add a space if a previous element had a label.
         } else if (!labels.empty()) {
@@ -268,7 +316,6 @@ class TypeDecoder {
 
         elements.push_back(elementType);
       }
-      bool variadic = (Node->getKind() == NodeKind::VariadicTuple);
       return Builder.createTupleType(elements, std::move(labels), variadic);
     }
     case NodeKind::TupleElement:
@@ -380,8 +427,7 @@ private:
     };
 
     // Expand a single level of tuple.
-    if (node->getKind() == NodeKind::VariadicTuple ||
-        node->getKind() == NodeKind::NonVariadicTuple) {
+    if (node->getKind() == NodeKind::Tuple) {
       // TODO: preserve variadic somewhere?
 
       // Decode all the elements as separate arguments.
@@ -722,7 +768,20 @@ public:
     }
     case MetadataKind::Existential: {
       auto Exist = cast<TargetExistentialTypeMetadata<Runtime>>(Meta);
-      std::vector<BuiltType> Protocols;
+      std::vector<BuiltType> Members;
+      bool HasExplicitAnyObject = false;
+
+      if (Exist->Flags.hasSuperclassConstraint()) {
+        // The superclass is stored after the list of protocols.
+        auto SuperclassType = readTypeFromMetadata(
+          Exist->Protocols[Exist->Protocols.NumProtocols]);
+        if (!SuperclassType) return BuiltType();
+        Members.push_back(SuperclassType);
+      }
+
+      if (Exist->isClassBounded())
+        HasExplicitAnyObject = true;
+
       for (size_t i = 0; i < Exist->Protocols.NumProtocols; ++i) {
         auto ProtocolAddress = Exist->Protocols[i];
         auto ProtocolDescriptor = readProtocolDescriptor(ProtocolAddress);
@@ -733,14 +792,16 @@ public:
         if (!Reader->readString(RemoteAddress(ProtocolDescriptor->Name),
                                 MangledName))
           return BuiltType();
-        auto Demangled = Demangle::demangleSymbolAsNode(MangledName);
+        Demangle::Context DCtx;
+        auto Demangled = DCtx.demangleSymbolAsNode(MangledName);
         auto Protocol = decodeMangledType(Demangled);
         if (!Protocol)
           return BuiltType();
 
-        Protocols.push_back(Protocol);
+        Members.push_back(Protocol);
       }
-      auto BuiltExist = Builder.createProtocolCompositionType(Protocols);
+      auto BuiltExist = Builder.createProtocolCompositionType(
+        Members, HasExplicitAnyObject);
       TypeCache[MetadataAddress] = BuiltExist;
       return BuiltExist;
     }
@@ -803,7 +864,9 @@ public:
 
   BuiltType readTypeFromMangledName(const char *MangledTypeName,
                                     size_t Length) {
-    auto Demangled = Demangle::demangleSymbolAsNode(MangledTypeName, Length);
+    Demangle::Demangler Dem;
+    Demangle::NodePointer Demangled =
+      Dem.demangleSymbol(StringRef(MangledTypeName, Length));
     return decodeMangledType(Demangled);
   }
 
@@ -867,6 +930,8 @@ public:
       return {true, metadataPointer};
     }
     }
+
+    swift_runtime_unreachable("Unhandled IsaEncodingKind in switch.");
   }
 
   /// Read the parent type metadata from a nested nominal type metadata.
@@ -1054,6 +1119,14 @@ protected:
       case MetadataKind::ErrorObject:
         return _readMetadata<TargetEnumMetadata>(address);
       case MetadataKind::Existential: {
+        StoredPointer flagsAddress = address +
+          sizeof(StoredPointer);
+
+        StoredPointer flags;
+        if (!Reader->readInteger(RemoteAddress(flagsAddress),
+                                 &flags))
+          return nullptr;
+
         StoredPointer numProtocolsAddress = address +
           TargetExistentialTypeMetadata<Runtime>::OffsetToNumProtocols;
         StoredPointer numProtocols;
@@ -1068,6 +1141,9 @@ protected:
         auto totalSize = sizeof(TargetExistentialTypeMetadata<Runtime>)
           + numProtocols *
           sizeof(ConstTargetMetadataPointer<Runtime, TargetProtocolDescriptor>);
+
+        if (ExistentialTypeFlags(flags).hasSuperclassConstraint())
+          totalSize += sizeof(StoredPointer);
 
         return _readMetadata(address, totalSize);
       }

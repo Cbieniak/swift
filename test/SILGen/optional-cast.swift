@@ -1,4 +1,4 @@
-// RUN: %target-swift-frontend -Xllvm -new-mangling-for-tests -emit-silgen %s | %FileCheck %s
+// RUN: %target-swift-frontend -emit-silgen %s | %FileCheck %s
 
 class A {}
 class B : A {}
@@ -30,8 +30,8 @@ class B : A {}
 // CHECK-NEXT: br [[CONT:bb[0-9]+]]
 //
 //   If not, destroy_value the A and inject nothing into x.
-// CHECK:    [[NOT_B]]:
-// CHECK-NEXT: destroy_value [[VAL]]
+// CHECK:    [[NOT_B]]([[ORIGINAL_VALUE:%.*]] : $A):
+// CHECK-NEXT: destroy_value [[ORIGINAL_VALUE]]
 // CHECK-NEXT: inject_enum_addr [[PB]] : $*Optional<B>, #Optional.none
 // CHECK-NEXT: br [[CONT]]
 //
@@ -111,8 +111,8 @@ func foo(_ y : A?) {
 // CHECK-NEXT: br [[SWITCH_OB2:bb[0-9]+]](
 //
 //   If not, inject nothing into an optional.
-// CHECK:    [[NOT_B]]:
-// CHECK-NEXT: destroy_value [[VAL]]
+// CHECK:    [[NOT_B]]([[ORIGINAL_VALUE:%.*]] : $A):
+// CHECK-NEXT: destroy_value [[ORIGINAL_VALUE]]
 // CHECK-NEXT: enum $Optional<B>, #Optional.none!enumelt
 // CHECK-NEXT: br [[SWITCH_OB2]](
 //
@@ -163,7 +163,7 @@ func bar(_ y : A????) {
 }
 
 
-// CHECK-LABEL: sil hidden @_T04main3bazys9AnyObject_pSgF : $@convention(thin) (@owned Optional<AnyObject>) -> () {
+// CHECK-LABEL: sil hidden @_T04main3bazyyXlSgF : $@convention(thin) (@owned Optional<AnyObject>) -> () {
 // CHECK:       bb0([[ARG:%.*]] : $Optional<AnyObject>):
 // CHECK:         [[X:%.*]] = alloc_box ${ var Optional<B> }, var, name "x"
 // CHECK-NEXT:    [[PB:%.*]] = project_box [[X]]
@@ -174,10 +174,11 @@ func bar(_ y : A????) {
 // CHECK:         [[VAL:%.*]] = unchecked_enum_data [[ARG_COPY]]
 // CHECK-NEXT:    [[X_VALUE:%.*]] = init_enum_data_addr [[PB]] : $*Optional<B>, #Optional.some
 // CHECK-NEXT:    checked_cast_br [[VAL]] : $AnyObject to $B, [[IS_B:bb.*]], [[NOT_B:bb[0-9]+]]
-// CHECK:       [[IS_B]](
-// CHECK:       [[NOT_B]]:
-// CHECK:         destroy_value [[VAL]]
-// CHECK: } // end sil function '_T04main3bazys9AnyObject_pSgF'
+// CHECK:       [[IS_B]]([[CASTED_VALUE:%.*]] : $B):
+// CHECK:         store [[CASTED_VALUE]] to [init] [[X_VALUE]]
+// CHECK:       [[NOT_B]]([[ORIGINAL_VALUE:%.*]] : $AnyObject):
+// CHECK:         destroy_value [[ORIGINAL_VALUE]]
+// CHECK: } // end sil function '_T04main3bazyyXlSgF'
 func baz(_ y : AnyObject?) {
   var x = (y as? B)
 }

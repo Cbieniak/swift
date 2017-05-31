@@ -1,5 +1,6 @@
 add_swift_library(swiftSyntax STATIC
   DeclSyntax.cpp
+  ExprSyntax.cpp
   Format.cpp
   TokenSyntax.cpp
   GenericSyntax.cpp
@@ -11,4 +12,5 @@ add_swift_library(swiftSyntax STATIC
   SyntaxFactory.cpp
   SyntaxData.cpp
   TypeSyntax.cpp
+  UnknownSyntax.cpp
 )

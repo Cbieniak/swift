@@ -16,6 +16,12 @@ Include the following in each entry:
 
 ### Declarations
 
+- declaration-modifiers
+  - `DeclModifierListSyntax`
+
+- declaration-modifier
+  - `DeclModifierSyntax`
+
 - struct-declaration
   - `StructDeclSyntax`
 
@@ -40,6 +46,27 @@ Include the following in each entry:
   - `DeclMembersSyntax`
   - `StructDeclSyntax` used for the `{` `}` braces.
 
+- function-declaration
+  - `FunctionDeclSyntax`
+
+- function-body
+  - `CodeBlockSyntax`
+
+- function-result
+  - `TypeSyntax`
+
+- function-signature
+  - `FunctionSignatureSyntax`
+
+- parameter-clause
+  - `FunctionParameterClauseSyntax`
+
+- parameter-list
+  - `FunctionParameterListSyntax`
+
+- parameter
+  - `FunctionParameterSyntax`
+
 ### Statements
 
 - statement
@@ -60,11 +87,35 @@ Include the following in each entry:
 - continue-statement
   - `ContinueStmtSyntax`
 
+- return-statement
+  - `ReturnStmtSyntax`
+
+### Expressions
+
+- binary-literal
+- decimal-literal
+- hexadecimal-literal
+- integer-literal
+- octal-literal
+  - `IntegerLiteralExprSyntax`
+
+- function-call-argument
+  - `FunctionCallArgumentSyntax`
+
+- function-call-argument-list
+  - `FunctionCallArgumentListSyntax`
+
+- function-call-expression
+- function-call-argument-clause
+  - `FunctionCallExprSyntax`
+
 ### Types
 
 - type
+- type-annotation
   - `TypeSyntax` (Abstract base class)
 
+- protocol-identifier
 - type-identifier
   - `TypeIdentifierSyntax`
 
@@ -81,14 +132,29 @@ Include the following in each entry:
   - `DictionaryTypeSyntax`
 
 - function-type
+- function-type-argument
+- function-type-argument-clause
   - `FunctionTypeSyntax`
+
+- function-type-argument-list
+  - `TypeArgumentListSyntax`
 
 - metatype-type
   - `MetatypeTypeSyntax`
 
+- tuple-type
+  - `TupleTypeSyntax`
+
+- tuple-type-element
+  - `TupleTypeElementSyntax`
+
+- tuple-type-element-list
+  - `TupleTypeElementListSyntax`
+
 ### Type Attributes
 
 - attribute
+- attribute-argument-clause
   - `TypeAttributeSyntax`
 
 - attributes
@@ -117,23 +183,34 @@ Include the following in each entry:
 - generic-parameter-list
   - `GenericParameterListSyntax`
 
+- conformance-requirement
+  - `ConformanceRequirementSyntax`
+
 - same-type-requirement
   - `SameTypeRequirementSyntax`
 
 - generic-where-clause
   - `GenericWhereClauseSyntax`
 
+- requirement-list
+  - `GenericRequirementListSyntax`
+
 ### Identifiers and Terminal Tokens
 
 - access-level-modifier
+- argument-label
 - attribute-name
+- boolean-literal
 - class-name
 - closure-parameter-name
 - element-name
 - enum-case-name
 - enum-name
 - external-parameter-name
+- function-name
+- identifier-pattern
 - import-kind
+- import-path-identifier
 - label-name
 - local-parameter-name
 - mutation-modifier
@@ -150,212 +227,233 @@ Include the following in each entry:
 
 ## Unrepresented Grammar Productions
 
-- argument-label
-- argument-name
-- argument-names
+These are categorized somewhat by difficulty and priority.
+
+### Easy
+
 - array-literal
-- array-literal-item
 - array-literal-items
 - as-pattern
-- assignment-operator
-- attribute-argument-clause
-- availability-argument
-- availability-arguments
-- availability-condition
-- binary-expression
-- binary-expressions
-- binary-literal
-- binary-operator
-- boolean-literal
-- branch-statement
-- capture-list
-- capture-list-item
-- capture-list-items
-- capture-specifier
 - case-condition
-- case-item-list
 - case-label
-- catch-clause
-- catch-clauses
-- class-declaration
-- class-member
-- class-requirement
-- closure-expression
-- closure-parameter
-- closure-parameter-clause
-- closure-parameter-list
-- closure-signature
-- compilation-condition
-- compiler-control-statement
-- condition
-- condition-list
-- conditional-compilation-block
-- conditional-operator
-- conformance-requirement
-- constant-declaration
-- control-transfer-statement
-- decimal-exponent
-- decimal-fraction
-- decimal-literal
-- declaration-modifier
-- declaration-modifiers
-- default-argument-clause
-- default-label
-- defer-statement
-- deinitializer-declaration
-- dictionary-literal
-- dictionary-literal-item
-- dictionary-literal-items
-- didSet-clause
-- do-statement
 - dynamic-type-expression
-- else-clause
-- else-directive
-- else-directive-clause
-- elseif-directive
-- elseif-directive-clause
-- elseif-directive-clauses
-- endif-directive
-- enum-case-pattern
-- enum-declaration
-- escaped-character
-- explicit-member-expression
-- expression
-- expression-list
-- expression-pattern
-- extension-declaration
-- extension-member
-- extension-members
-- floating-point-e
 - floating-point-literal
-- floating-point-p
-- for-in-statement
 - forced-value-expression
-- function-body
-- function-call-argument
-- function-call-argument-clause
-- function-call-argument-list
-- function-call-expression
-- function-declaration
-- function-head
-- function-name
-- function-result
-- function-signature
-- function-type-argument
-- function-type-argument-clause
-- function-type-argument-list
-- getter-clause
-- getter-keyword-clause
-- getter-setter-block
-- getter-setter-keyword-block
-- guard-statement
-- hexadecimal-exponent
-- hexadecimal-fraction
-- hexadecimal-literal
-- hexadecimal-literal-character
-- hexadecimal-literal-characters
 - identifier-list
-- identifier-pattern
-- if-directive
-- if-directive-clause
-- if-statement
 - implicit-member-expression
-- import-declaration
 - import-path
-- import-path-identifier
 - in-out-expression
-- infix-operator-declaration
-- infix-operator-group
-- initializer
-- initializer-body
-- initializer-declaration
-- initializer-expression
-- initializer-head
-- integer-literal
-- interpolated-string-literal
 - interpolated-text
 - interpolated-text-item
 - is-pattern
 - key-path-expression
-- labeled-statement
 - line-control-statement
+- optional-chaining-expression
+- optional-pattern
+- parenthesized-expression
+- platform-condition
+- platform-version
+- postfix-operator-declaration
+- precedence-group-assignment
+- precedence-group-associativity
+- precedence-group-names
+- statement-label
+- static-string-literal
+- swift-version
+- throw-statement
+- value-binding-pattern
+- where-clause
+- dictionary-literal
+  - dictionary-literal-items
+    - dictionary-literal-item
+- capture-list
+    - capture-list-items
+      - capture-list-item
+- defer-statement
+
+### Medium
+
+- else-directive-clause
+- elseif-directive-clauses
+  - elseif-directive-clause
+- precedence-group-declaration
+- precedence-group-relation
+- expression-list
+- availability-condition
+  - availability-arguments
+    - availability-argument
+- switch-cases
+  - switch-case
+- constant-declaration
+- catch-clauses
+  - catch-clause
+- variable-declaration
+- do-statement
+- for-in-statement
+- guard-statement
+- case-item-list
+- import-declaration
+- if-directive-clause
+- if-statement
+  - else-clause
+- protocol-associated-type-declaration
+- repeat-while-statement
+- while-statement
+- tuple-expression
+  - tuple-element-list
+    - tuple-element
+- tuple-pattern
+  - tuple-pattern-element-list
+    - tuple-pattern-element
+- switch-statement
+- explicit-member-expression
+- optional-binding-condition
+- operator-declaration
+- selector-expression
+- protocol-composition-type
+- conditional-operator
+- deinitializer-declaration
+- didSet-clause
+- willSet-clause
+- pattern-initializer-list
+  - pattern-initializer
+- prefix-expression
+- prefix-operator-declaration
+- infix-operator-declaration
+  - infix-operator-group
+- binary-expression
+
+### Hard
+
+- protocol-declaration
+- closure-expression
+  - closure-signature
+    - closure-parameter-clause
+      - closure-parameter-list
+        - closure-parameter
+- extension-declaration
+- enum-declaration
+- class-declaration
+- getter-setter-block
+  - getter-setter-keyword-block
+  - getter-keyword-clause
+    - getter-clause
+  - setter-keyword-clause
+    - setter-clause
+      - setter-name
+- subscript-declaration
+- enum-case-pattern
+- initializer-declaration
+  - initializer-head
+- interpolated-string-literal
+- conditional-compilation-block
+
+## Trivial and Intermediate Grammar Productions
+
+- binary-expressions
+- binary-operator
+- compilation-condition
+- capture-specifier
+- precedence-group-attributes
+- precedence-group-attribute
+- prefix-operator
+- type-casting-operator
+- willSet-didSet-block
+- architecture
+- string-literal
+- argument-names
+- array-literal-item
+- type-casting-pattern
+- assignment-operator
+- expression-pattern
+- binary-digit
+- binary-literal-character
+- binary-literal-characters
+- branch-statement
+- class-member
+- class-requirement
+- condition
+- condition-list
+- compiler-control-statement
+- control-transfer-statement
+- decimal-digit
+- decimal-digits
+- decimal-exponent
+- decimal-fraction
+- decimal-literal-character
+- decimal-literal-characters
+- default-argument-clause
+- default-label
+- dot-operator-character
+- dot-operator-characters
+- dot-operator-head
+- else-directive
+- elseif-directive
+- endif-directive
+- escaped-character
+- expression
+- extension-member
+- file-name
+- floating-point-e
+- floating-point-p
+- function-head
+- hexadecimal-digit
+- hexadecimal-exponent
+- hexadecimal-fraction
+- identifier-character
+- identifier-characters
+- identifier-head
+- if-directive
+- where-expression
+- implicit-parameter-name
+- initializer
+- initializer-body
+- initializer-expression
+- labeled-statement (TODO: Put in loop-, if-, switch-, do-statement layout)
 - line-number
 - literal
 - literal-expression
 - loop-statement
 - nil-literal
 - numeric-literal
-- octal-literal
+- octal-digit
+- octal-literal-character
+- octal-literal-characters
+- operating-system
 - operator
 - operator-character
 - operator-characters
-- operator-declaration
 - operator-head
-- optional-binding-condition
-- optional-chaining-expression
-- optional-pattern
-- parameter
-- parameter-clause
-- parameter-list
-- parenthesized-expression
 - pattern
-- pattern-initializer
-- pattern-initializer-list
-- platform-condition
-- platform-version
-- playground-literal
 - postfix-expression
 - postfix-operator
-- postfix-operator-declaration
 - postfix-self-expression
-- precedence-group-assignment
-- precedence-group-associativity
-- precedence-group-attribute
-- precedence-group-attributes
-- precedence-group-declaration
-- precedence-group-names
-- precedence-group-relation
-- prefix-expression
-- prefix-operator
-- prefix-operator-declaration
-- primary-expression
-- protocol-associated-type-declaration
 - protocol-composition-continuation
-- protocol-composition-type
-- protocol-declaration
-- protocol-identifier
 - protocol-initializer-declaration
 - protocol-member
 - protocol-member-declaration
 - protocol-members
+- extension-members
 - protocol-method-declaration
 - protocol-property-declaration
 - protocol-subscript-declaration
+- quoted-text
+- quoted-text-item
 - raw-value-assignment
 - raw-value-literal
 - raw-value-style-enum
 - raw-value-style-enum-case
 - raw-value-style-enum-case-clause
 - raw-value-style-enum-case-list
+- playground-literal
 - raw-value-style-enum-member
 - raw-value-style-enum-members
-- repeat-while-statement
 - requirement
-- requirement-list
-- return-statement
-- selector-expression
 - self-expression
 - self-initializer-expression
 - self-method-expression
 - self-subscript-expression
-- setter-clause
-- setter-keyword-clause
-- setter-name
-- statement-label
-- static-string-literal
-- string-literal
 - struct-member
-- subscript-declaration
 - subscript-expression
 - subscript-head
 - subscript-result
@@ -363,25 +461,8 @@ Include the following in each entry:
 - superclass-initializer-expression
 - superclass-method-expression
 - superclass-subscript-expression
-- swift-version
-- switch-case
-- switch-cases
-- switch-statement
-- throw-statement
 - top-level-declaration
 - try-operator
-- tuple-element
-- tuple-element-list
-- tuple-expression
-- tuple-pattern
-- tuple-pattern-element
-- tuple-pattern-element-list
-- tuple-type
-- tuple-type-element
-- tuple-type-element-list
-- type-annotation
-- type-casting-operator
-- type-casting-pattern
 - type-inheritance-clause
 - type-inheritance-list
 - unicode-scalar-digits
@@ -391,45 +472,8 @@ Include the following in each entry:
 - union-style-enum-case-list
 - union-style-enum-member
 - union-style-enum-members
-- value-binding-pattern
-- variable-declaration
 - variable-declaration-head
-- where-clause
-- where-expression
-- while-statement
 - wildcard-expression
 - wildcard-pattern
-- willSet-clause
-- willSet-didSet-block
-
-## Trivial Grammar Productions
-
-- architecture
-- binary-digit
-- binary-literal-character
-- binary-literal-characters
-- decimal-digit
-- decimal-digits
-- decimal-literal-character
-- decimal-literal-characters
-- dot-operator-character
-- dot-operator-characters
-- dot-operator-head
-- hexadecimal-digit
-- identifier-character
-- identifier-characters
-- identifier-head
-- implicit-parameter-name
-- file-name
-- octal-digit
-- octal-literal-character
-- octal-literal-characters
-- operating-system
-- quoted-text
-- quoted-text-item
-
-## Intermediate Grammar Productions
-
-These productions don't need to be represented directly in a class hierarchy.
-
+- primary-expression
 - generic-argument

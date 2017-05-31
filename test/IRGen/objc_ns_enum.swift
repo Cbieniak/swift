@@ -1,6 +1,6 @@
 // RUN: rm -rf %t && mkdir -p %t
 // RUN: %build-irgen-test-overlays
-// RUN: %target-swift-frontend(mock-sdk: -sdk %S/Inputs -I %t) -Xllvm -new-mangling-for-tests -primary-file %s -emit-ir | %FileCheck %s
+// RUN: %target-swift-frontend(mock-sdk: -sdk %S/Inputs -I %t) -primary-file %s -emit-ir | %FileCheck %s
 
 // REQUIRES: CPU=x86_64
 // REQUIRES: objc_interop
@@ -125,7 +125,7 @@ func objc_enum_switch(_ x: ExportedToObjC) -> Int {
   dynamic var prop: ExportedToObjC = .Foo
 }
 
-// CHECK-LABEL: define hidden swiftcc void @_T012objc_ns_enum0a1_C13_method_callsyAA15ObjCEnumMethodsCF(%C12objc_ns_enum15ObjCEnumMethods*)
+// CHECK-LABEL: define hidden swiftcc void @_T012objc_ns_enum0a1_C13_method_callsyAA15ObjCEnumMethodsCF(%T12objc_ns_enum15ObjCEnumMethodsC*)
 func objc_enum_method_calls(_ x: ObjCEnumMethods) {
   
   // CHECK: call i64 bitcast (void ()* @objc_msgSend to i64 ([[OBJC_ENUM_METHODS]]*, i8*)*)
